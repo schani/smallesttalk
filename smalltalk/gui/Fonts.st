@@ -101,5 +101,5 @@ glyphRowsForCode: code
 Form methodsFor: 'text'
 !
 drawString: aString atX: x y: y font: aFont color: color
-    ^ aFont drawString: aString on: self atX: x y: y color: color
+    ^ (self asCanvas) drawString: aString atX: x y: y font: aFont color: color
 !

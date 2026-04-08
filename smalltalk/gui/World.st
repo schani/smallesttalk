@@ -41,15 +41,32 @@ addSubview: aView
     subviews := newArray.
     ^ aView
 !
+contentBounds
+    ^ bounds
+!
 View methodsFor: 'drawing'
 !
-drawOn: aForm
-    ^ self drawSubviewsOn: aForm index: 1
+drawOn: aDrawingTarget
+    | canvas viewCanvas |
+    canvas := aDrawingTarget asCanvas.
+    viewCanvas := self drawingCanvasFrom: canvas.
+    self drawContentsOn: viewCanvas.
+    ^ self drawSubviewsOn: (self subviewCanvasFrom: viewCanvas) index: 1
 !
-drawSubviewsOn: aForm index: index
+drawingCanvasFrom: aCanvas
+    bounds isNil ifTrue: [ ^ aCanvas ].
+    ^ aCanvas clippedTo: bounds
+!
+subviewCanvasFrom: aCanvas
+    ^ aCanvas
+!
+drawContentsOn: aCanvas
+    ^ self
+!
+drawSubviewsOn: aCanvas index: index
     index > subviews size ifTrue: [ ^ self ].
-    (subviews at: index) drawOn: aForm.
-    ^ self drawSubviewsOn: aForm index: index + 1
+    (subviews at: index) drawOn: aCanvas.
+    ^ self drawSubviewsOn: aCanvas index: index + 1
 !
 SolidView methodsFor: 'initialization'
 !
@@ -68,16 +85,9 @@ fillValue: anObject
 !
 SolidView methodsFor: 'drawing'
 !
-drawOn: aForm
-    bounds notNil ifTrue: [
-        aForm
-            fillRectangleX: ((bounds origin) x)
-            y: ((bounds origin) y)
-            width: bounds width
-            height: bounds height
-            with: fillValue
-    ].
-    ^ super drawOn: aForm
+drawContentsOn: aCanvas
+    bounds notNil ifTrue: [ aCanvas fillRectangle: bounds with: fillValue ].
+    ^ self
 !
 LabelView methodsFor: 'initialization'
 !
@@ -110,11 +120,11 @@ color: anObject
 !
 LabelView methodsFor: 'drawing'
 !
-drawOn: aForm
+drawContentsOn: aCanvas
     bounds notNil ifTrue: [
-        aForm drawString: text atX: ((bounds origin) x) y: ((bounds origin) y) font: font color: color
+        aCanvas drawString: text atX: ((bounds origin) x) y: ((bounds origin) y) font: font color: color
     ].
-    ^ super drawOn: aForm
+    ^ self
 !
 SystemWindow methodsFor: 'initialization'
 !
@@ -180,34 +190,51 @@ titleInset
 titleInset: anObject
     titleInset := anObject
 !
+contentBounds
+    | rect |
+    bounds isNil ifTrue: [ ^ nil ].
+    rect := Rectangle new.
+    rect
+        setX: ((bounds origin) x) + 1
+        y: ((bounds origin) y) + titleBarHeight + 1
+        width: bounds width - 2
+        height: bounds height - titleBarHeight - 2.
+    ^ rect
+!
 SystemWindow methodsFor: 'drawing'
 !
-drawOn: aForm
+drawContentsOn: aCanvas
     | x y w h |
     bounds isNil ifTrue: [ ^ self ].
     x := (bounds origin) x.
     y := (bounds origin) y.
     w := bounds width.
     h := bounds height.
-    aForm frameRectangleX: x y: y width: w height: h with: borderValue.
-    self drawInteriorOn: aForm atX: x y: y width: w height: h.
-    ^ super drawOn: aForm
+    aCanvas frameRectangleX: x y: y width: w height: h with: borderValue.
+    self drawInteriorOn: aCanvas atX: x y: y width: w height: h.
+    ^ self
 !
-drawInteriorOn: aForm atX: x y: y width: w height: h
+drawInteriorOn: aCanvas atX: x y: y width: w height: h
     | innerHeight |
     w <= 2 ifTrue: [ ^ self ].
     h <= 2 ifTrue: [ ^ self ].
-    aForm fillRectangleX: x + 1 y: y + 1 width: w - 2 height: h - 2 with: fillValue.
+    aCanvas fillRectangleX: x + 1 y: y + 1 width: w - 2 height: h - 2 with: fillValue.
     innerHeight := titleBarHeight.
     innerHeight > 0 ifTrue: [
-        aForm fillRectangleX: x + 1 y: y + 1 width: w - 2 height: innerHeight with: titleBarValue.
-        self drawTitleOn: aForm atX: x y: y
+        aCanvas fillRectangleX: x + 1 y: y + 1 width: w - 2 height: innerHeight with: titleBarValue.
+        self drawTitleOn: aCanvas atX: x y: y
     ].
     ^ self
 !
-drawTitleOn: aForm atX: x y: y
-    aForm drawString: title atX: x + titleInset y: y + 1 font: titleFont color: titleColor.
+drawTitleOn: aCanvas atX: x y: y
+    aCanvas drawString: title atX: x + titleInset y: y + 1 font: titleFont color: titleColor.
     ^ self
+!
+subviewCanvasFrom: aCanvas
+    | rect |
+    rect := self contentBounds.
+    rect isNil ifTrue: [ ^ aCanvas ].
+    ^ aCanvas clippedTo: rect
 !
 World methodsFor: 'initialization'
 !

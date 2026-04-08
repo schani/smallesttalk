@@ -80,19 +80,19 @@ clear
 !
 TranscriptWindow methodsFor: 'drawing'
 !
-drawOn: aForm
-    super drawOn: aForm.
-    self drawLinesOn: aForm.
+drawContentsOn: aCanvas
+    super drawContentsOn: aCanvas.
+    self drawLinesOn: (aCanvas clippedTo: self contentBounds).
     ^ self
 !
-drawLinesOn: aForm
+drawLinesOn: aCanvas
     | startX startY index |
-    bounds isNil ifTrue: [ ^ self ].
-    startX := ((bounds origin) x) + textInset.
-    startY := ((bounds origin) y) + titleBarHeight + 2.
+    (self contentBounds) isNil ifTrue: [ ^ self ].
+    startX := ((self contentBounds) origin) x + textInset.
+    startY := ((self contentBounds) origin) y + 1.
     index := 1.
     [ index <= lines size ] whileTrue: [
-        aForm drawString: (lines at: index) atX: startX y: startY font: textFont color: 1.
+        aCanvas drawString: (lines at: index) atX: startX y: startY font: textFont color: 1.
         startY := startY + lineHeight.
         index := index + 1
     ].
@@ -156,19 +156,19 @@ clear
 !
 WorkspaceWindow methodsFor: 'drawing'
 !
-drawOn: aForm
-    super drawOn: aForm.
-    self drawLinesOn: aForm.
+drawContentsOn: aCanvas
+    super drawContentsOn: aCanvas.
+    self drawLinesOn: (aCanvas clippedTo: self contentBounds).
     ^ self
 !
-drawLinesOn: aForm
+drawLinesOn: aCanvas
     | startX startY index |
-    bounds isNil ifTrue: [ ^ self ].
-    startX := ((bounds origin) x) + textInset.
-    startY := ((bounds origin) y) + titleBarHeight + 2.
+    (self contentBounds) isNil ifTrue: [ ^ self ].
+    startX := ((self contentBounds) origin) x + textInset.
+    startY := ((self contentBounds) origin) y + 1.
     index := 1.
     [ index <= lines size ] whileTrue: [
-        aForm drawString: (lines at: index) atX: startX y: startY font: textFont color: 1.
+        aCanvas drawString: (lines at: index) atX: startX y: startY font: textFont color: 1.
         startY := startY + lineHeight.
         index := index + 1
     ].
@@ -239,58 +239,111 @@ methodPaneHeight
 methodPaneHeight: anObject
     methodPaneHeight := anObject
 !
+BrowserWindow methodsFor: 'layout'
+!
+classesPaneBounds
+    | content rect |
+    content := self contentBounds.
+    content isNil ifTrue: [ ^ nil ].
+    rect := Rectangle new.
+    rect
+        setX: (content origin) x
+        y: (content origin) y
+        width: classPaneWidth
+        height: content height.
+    ^ rect
+!
+methodsPaneBounds
+    | content rect |
+    content := self contentBounds.
+    content isNil ifTrue: [ ^ nil ].
+    rect := Rectangle new.
+    rect
+        setX: (content origin) x + classPaneWidth - 1
+        y: (content origin) y
+        width: content width - classPaneWidth + 1
+        height: methodPaneHeight.
+    ^ rect
+!
+sourcePaneBounds
+    | content rect |
+    content := self contentBounds.
+    content isNil ifTrue: [ ^ nil ].
+    rect := Rectangle new.
+    rect
+        setX: (content origin) x + classPaneWidth - 1
+        y: (content origin) y + methodPaneHeight - 1
+        width: content width - classPaneWidth + 1
+        height: content height - methodPaneHeight + 1.
+    ^ rect
+!
+paneLabelBounds: aRectangle
+    | rect |
+    rect := Rectangle new.
+    rect
+        setX: (aRectangle origin) x + 1
+        y: (aRectangle origin) y + 1
+        width: aRectangle width - 2
+        height: lineHeight.
+    ^ rect
+!
+paneTextBounds: aRectangle
+    | rect |
+    rect := Rectangle new.
+    rect
+        setX: (aRectangle origin) x + 2
+        y: (aRectangle origin) y + lineHeight + 2
+        width: aRectangle width - 4
+        height: aRectangle height - lineHeight - 3.
+    ^ rect
+!
 BrowserWindow methodsFor: 'drawing'
 !
-drawOn: aForm
-    super drawOn: aForm.
-    self drawPanesOn: aForm.
+drawContentsOn: aCanvas
+    super drawContentsOn: aCanvas.
+    self drawPanesOn: (aCanvas clippedTo: self contentBounds).
     ^ self
 !
-drawPanesOn: aForm
-    | x y w h contentX contentY contentW contentH leftW rightX rightW topH bottomY bottomH |
-    bounds isNil ifTrue: [ ^ self ].
-    x := (bounds origin) x.
-    y := (bounds origin) y.
-    w := bounds width.
-    h := bounds height.
-    contentX := x + 1.
-    contentY := y + titleBarHeight + 1.
-    contentW := w - 2.
-    contentH := h - titleBarHeight - 2.
-    leftW := classPaneWidth.
-    rightX := contentX + leftW + 1.
-    rightW := contentW - leftW - 1.
-    topH := methodPaneHeight.
-    bottomY := contentY + topH + 1.
-    bottomH := contentH - topH - 1.
-    aForm frameRectangleX: contentX y: contentY width: leftW height: contentH with: 1.
-    aForm frameRectangleX: rightX y: contentY width: rightW height: topH with: 1.
-    aForm frameRectangleX: rightX y: bottomY width: rightW height: bottomH with: 1.
-    self drawPaneLabel: 'CLASSES' on: aForm atX: contentX y: contentY width: leftW.
-    self drawPaneLabel: 'METHODS' on: aForm atX: rightX y: contentY width: rightW.
-    self drawPaneLabel: 'SOURCE' on: aForm atX: rightX y: bottomY width: rightW.
-    self drawList: classList on: aForm atX: contentX + 2 y: contentY + lineHeight + 2 width: leftW - 4 height: contentH - lineHeight - 3.
-    self drawList: methodList on: aForm atX: rightX + 2 y: contentY + lineHeight + 2 width: rightW - 4 height: topH - lineHeight - 3.
-    self drawList: sourceLines on: aForm atX: rightX + 2 y: bottomY + lineHeight + 2 width: rightW - 4 height: bottomH - lineHeight - 3.
+drawPanesOn: aCanvas
+    | classesRect methodsRect sourceRect |
+    (self contentBounds) isNil ifTrue: [ ^ self ].
+    classesRect := self classesPaneBounds.
+    methodsRect := self methodsPaneBounds.
+    sourceRect := self sourcePaneBounds.
+    aCanvas frameRectangleX: ((classesRect origin) x) y: ((classesRect origin) y) width: classesRect width height: classesRect height with: 1.
+    aCanvas frameRectangleX: ((methodsRect origin) x) y: ((methodsRect origin) y) width: methodsRect width height: methodsRect height with: 1.
+    aCanvas frameRectangleX: ((sourceRect origin) x) y: ((sourceRect origin) y) width: sourceRect width height: sourceRect height with: 1.
+    self drawPaneLabel: 'CLASSES' in: classesRect on: aCanvas.
+    self drawPaneLabel: 'METHODS' in: methodsRect on: aCanvas.
+    self drawPaneLabel: 'SOURCE' in: sourceRect on: aCanvas.
+    self drawList: classList in: (self paneTextBounds: classesRect) on: aCanvas.
+    self drawList: methodList in: (self paneTextBounds: methodsRect) on: aCanvas.
+    self drawList: sourceLines in: (self paneTextBounds: sourceRect) on: aCanvas.
     ^ self
 !
-drawPaneLabel: aString on: aForm atX: x y: y width: width
-    aForm fillRectangleX: x + 1 y: y + 1 width: width - 2 height: lineHeight with: 1.
-    aForm drawString: aString atX: x + textInset y: y + 1 font: textFont color: 0.
+drawPaneLabel: aString in: aRectangle on: aCanvas
+    | labelRect |
+    labelRect := self paneLabelBounds: aRectangle.
+    aCanvas fillRectangle: labelRect with: 1.
+    (aCanvas clippedTo: labelRect)
+        drawString: aString
+        atX: ((labelRect origin) x) + textInset - 1
+        y: (labelRect origin) y
+        font: textFont
+        color: 0.
     ^ self
 !
-drawList: anArray on: aForm atX: startX y: startY width: width height: height
-    | buffer index drawY |
-    width <= 0 ifTrue: [ ^ self ].
-    height <= 0 ifTrue: [ ^ self ].
-    buffer := Form new initializeWidth: width height: height depth: 1.
+drawList: anArray in: aRectangle on: aCanvas
+    | index drawY listCanvas |
+    aRectangle width <= 0 ifTrue: [ ^ self ].
+    aRectangle height <= 0 ifTrue: [ ^ self ].
+    listCanvas := aCanvas clippedTo: aRectangle.
     index := 1.
-    drawY := 0.
+    drawY := (aRectangle origin) y.
     [ index <= anArray size ] whileTrue: [
-        buffer drawString: (anArray at: index) atX: 0 y: drawY font: textFont color: 1.
+        listCanvas drawString: (anArray at: index) atX: (aRectangle origin) x y: drawY font: textFont color: 1.
         drawY := drawY + lineHeight.
         index := index + 1
     ].
-    aForm copyRectangleX: startX y: startY width: width height: height from: buffer atX: 0 y: 0.
     ^ self
 !

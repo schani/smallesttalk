@@ -737,6 +737,32 @@ P := SectionPoint new. P x: 21
     }
 
     #[test]
+    fn gui_canvas_clips_fill_rectangles() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "F := Form new initializeWidth: 8 height: 1 depth: 1. Clip := Rectangle new setX: 2 y: 0 width: 2 height: 1. C := Canvas new initializeOn: F clip: Clip origin: (Point new setX: 0 y: 0). C fillRectangleX: 0 y: 0 width: 8 height: 1 with: 1. F bits at: 1",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(48));
+    }
+
+    #[test]
+    fn gui_canvas_clips_text() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "F := Form new initializeWidth: 8 height: 7 depth: 1. Clip := Rectangle new setX: 0 y: 0 width: 2 height: 7. C := Canvas new initializeOn: F clip: Clip origin: (Point new setX: 0 y: 0). Font := BitmapFont new initializeDefault. C drawString: 'A' atX: 0 y: 0 font: Font color: 1. F bits at: 1",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(64));
+    }
+
+    #[test]
     fn gui_font_can_draw_text_on_form() {
         let mut vm = Vm::new();
         load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
