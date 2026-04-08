@@ -458,7 +458,8 @@ fn render_browser_frame(
 fn run_live_browser(paths: &[String]) -> Result<(), String> {
     let mut vm = Vm::new();
     let layout = BrowserLayout::default();
-    let debug_mouse = std::env::var_os("SMALLESTTALK_BROWSER_DEBUG").is_some();
+    let debug_mouse = std::env::var_os("SMALLESTTALK_BROWSER_DEBUG").is_some()
+        || std::env::var_os("SMALLESTTALK_BROWSER_MOUSE_DEBUG").is_some();
     for path in paths {
         load_source_file_into_vm(&mut vm, Path::new(path))?;
     }
@@ -482,7 +483,9 @@ fn run_live_browser(paths: &[String]) -> Result<(), String> {
         render_selector,
     )?;
     let mut last_mouse_down = false;
+    let mut frame_counter: u64 = 0;
     while window.is_open() {
+        frame_counter += 1;
         let mut dirty = false;
         for key in window.get_keys_pressed(KeyRepeat::Yes) {
             match key {
@@ -515,11 +518,28 @@ fn run_live_browser(paths: &[String]) -> Result<(), String> {
             }
         }
 
+        let mouse_pos = window.get_mouse_pos(MouseMode::Clamp);
         let mouse_down = window.get_mouse_down(MouseButton::Left);
+        if debug_mouse && frame_counter % 30 == 0 {
+            match mouse_pos {
+                Some((mx, my)) => eprintln!(
+                    "browser mouse poll: frame={frame_counter} x={} y={} down={}",
+                    mx.max(0.0) as usize,
+                    my.max(0.0) as usize,
+                    mouse_down
+                ),
+                None => eprintln!(
+                    "browser mouse poll: frame={frame_counter} position=<none> down={mouse_down}"
+                ),
+            }
+        }
         if mouse_down && !last_mouse_down {
-            if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Clamp) {
+            if let Some((mx, my)) = mouse_pos {
                 let mx = mx.max(0.0) as usize;
                 let my = my.max(0.0) as usize;
+                if debug_mouse {
+                    eprintln!("browser mouse click: x={mx} y={my} down={mouse_down}");
+                }
                 if let Some(row) = layout.class_hit_row(mx, my) {
                     if debug_mouse {
                         eprintln!("browser mouse class hit: x={mx} y={my} row={row}");
@@ -538,6 +558,8 @@ fn run_live_browser(paths: &[String]) -> Result<(), String> {
             } else if debug_mouse {
                 eprintln!("browser mouse position unavailable");
             }
+        } else if debug_mouse && mouse_down != last_mouse_down {
+            eprintln!("browser mouse button transition: down={mouse_down}");
         }
         last_mouse_down = mouse_down;
 
