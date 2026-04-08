@@ -247,31 +247,50 @@ drawOn: aForm
     ^ self
 !
 drawPanesOn: aForm
-    | x y w h contentY contentH dividerX dividerY |
+    | x y w h contentX contentY contentW contentH leftW rightX rightW topH bottomY bottomH |
     bounds isNil ifTrue: [ ^ self ].
     x := (bounds origin) x.
     y := (bounds origin) y.
     w := bounds width.
     h := bounds height.
+    contentX := x + 1.
     contentY := y + titleBarHeight + 1.
+    contentW := w - 2.
     contentH := h - titleBarHeight - 2.
-    dividerX := x + classPaneWidth.
-    dividerY := contentY + methodPaneHeight.
-    aForm fillRectangleX: dividerX y: contentY width: 1 height: contentH with: 1.
-    aForm fillRectangleX: dividerX y: dividerY width: w - classPaneWidth - 1 height: 1 with: 1.
-    self drawList: classList on: aForm atX: x + textInset y: contentY + 1.
-    self drawList: methodList on: aForm atX: dividerX + textInset + 1 y: contentY + 1.
-    self drawList: sourceLines on: aForm atX: dividerX + textInset + 1 y: dividerY + 2.
+    leftW := classPaneWidth.
+    rightX := contentX + leftW + 1.
+    rightW := contentW - leftW - 1.
+    topH := methodPaneHeight.
+    bottomY := contentY + topH + 1.
+    bottomH := contentH - topH - 1.
+    aForm frameRectangleX: contentX y: contentY width: leftW height: contentH with: 1.
+    aForm frameRectangleX: rightX y: contentY width: rightW height: topH with: 1.
+    aForm frameRectangleX: rightX y: bottomY width: rightW height: bottomH with: 1.
+    self drawPaneLabel: 'CLASSES' on: aForm atX: contentX y: contentY width: leftW.
+    self drawPaneLabel: 'METHODS' on: aForm atX: rightX y: contentY width: rightW.
+    self drawPaneLabel: 'SOURCE' on: aForm atX: rightX y: bottomY width: rightW.
+    self drawList: classList on: aForm atX: contentX + 2 y: contentY + lineHeight + 2 width: leftW - 4 height: contentH - lineHeight - 3.
+    self drawList: methodList on: aForm atX: rightX + 2 y: contentY + lineHeight + 2 width: rightW - 4 height: topH - lineHeight - 3.
+    self drawList: sourceLines on: aForm atX: rightX + 2 y: bottomY + lineHeight + 2 width: rightW - 4 height: bottomH - lineHeight - 3.
     ^ self
 !
-drawList: anArray on: aForm atX: startX y: startY
-    | index y |
+drawPaneLabel: aString on: aForm atX: x y: y width: width
+    aForm fillRectangleX: x + 1 y: y + 1 width: width - 2 height: lineHeight with: 1.
+    aForm drawString: aString atX: x + textInset y: y + 1 font: textFont color: 0.
+    ^ self
+!
+drawList: anArray on: aForm atX: startX y: startY width: width height: height
+    | buffer index drawY |
+    width <= 0 ifTrue: [ ^ self ].
+    height <= 0 ifTrue: [ ^ self ].
+    buffer := Form new initializeWidth: width height: height depth: 1.
     index := 1.
-    y := startY.
+    drawY := 0.
     [ index <= anArray size ] whileTrue: [
-        aForm drawString: (anArray at: index) atX: startX y: y font: textFont color: 1.
-        y := y + lineHeight.
+        buffer drawString: (anArray at: index) atX: 0 y: drawY font: textFont color: 1.
+        drawY := drawY + lineHeight.
         index := index + 1
     ].
+    aForm copyRectangleX: startX y: startY width: width height: height from: buffer atX: 0 y: 0.
     ^ self
 !

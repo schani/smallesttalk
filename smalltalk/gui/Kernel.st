@@ -58,6 +58,11 @@ setOrigin: aPoint corner: anotherPoint
     corner := anotherPoint.
     ^ self
 !
+setX: xValue y: yValue width: widthValue height: heightValue
+    origin := Point new setX: xValue y: yValue.
+    corner := Point new setX: xValue + widthValue y: yValue + heightValue.
+    ^ self
+!
 width
     ^ (corner x) - (origin x)
 !
