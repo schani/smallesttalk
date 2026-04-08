@@ -74,6 +74,7 @@ pub fn compile_method_source(
     let compiled_method = UnitCompiler::for_method(vm, class_index, &method).compile()?;
     vm.add_method(class_index, selector, compiled_method)
         .map_err(|_| CompileError::Unsupported("failed to install compiled method"))?;
+    vm.record_method_source(compiled_method, source);
     Ok(compiled_method)
 }
 

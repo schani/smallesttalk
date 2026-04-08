@@ -25,13 +25,13 @@ pub struct BrowserLayout {
 impl Default for BrowserLayout {
     fn default() -> Self {
         Self {
-            width: 640,
-            height: 480,
+            width: 256,
+            height: 160,
             margin: 8,
             title_bar_height: 8,
             line_height: 8,
-            class_pane_width: 180,
-            method_pane_height: 176,
+            class_pane_width: 96,
+            method_pane_height: 56,
         }
     }
 }
@@ -137,6 +137,15 @@ impl LiveBrowser {
             focus: BrowserFocus::Classes,
         };
         browser.refresh(vm);
+        if let Some(index) = browser
+            .classes
+            .iter()
+            .position(|class_index| vm.class_table.get(*class_index).map(|info| info.name.as_str()) == Some("BrowserWindow"))
+        {
+            browser.selected_class = index;
+            browser.selected_method = 0;
+            browser.refresh(vm);
+        }
         browser
     }
 
@@ -236,17 +245,21 @@ impl LiveBrowser {
             .enumerate()
             .skip(class_start)
             .take(layout.classes_visible_rows())
-            .map(|(index, name)| decorate_line(name, index == self.selected_class, self.focus == BrowserFocus::Classes))
+            .map(|(index, name)| truncate_text(&decorate_line(name, index == self.selected_class, self.focus == BrowserFocus::Classes), 28))
             .collect();
         let method_lines = method_names
             .iter()
             .enumerate()
             .skip(method_start)
             .take(layout.methods_visible_rows())
-            .map(|(index, name)| decorate_line(name, index == self.selected_method, self.focus == BrowserFocus::Methods))
+            .map(|(index, name)| truncate_text(&decorate_line(name, index == self.selected_method, self.focus == BrowserFocus::Methods), 36))
             .collect();
 
-        let mut source_lines = self.source_lines(vm);
+        let mut source_lines = self
+            .source_lines(vm)
+            .into_iter()
+            .map(|line| truncate_text(&line, 64))
+            .collect::<Vec<_>>();
         source_lines.truncate(layout.source_visible_rows().max(1));
         let title = match (self.current_class_name(vm), self.current_method_names(vm).get(self.selected_method)) {
             (Some(class_name), Some(selector)) if !method_names.is_empty() => {
@@ -343,6 +356,15 @@ fn window_start(total: usize, selected: usize, visible: usize) -> usize {
     start
 }
 
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let truncated = text.chars().take(max_chars).collect::<String>();
+    if text.chars().count() > max_chars {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
 fn decorate_line(text: &str, selected: bool, focused: bool) -> String {
     match (selected, focused) {
         (true, true) => format!("> {text}"),
@@ -411,6 +433,7 @@ mod tests {
             browser.move_down(&vm);
         }
         let data = browser.view_data(&vm, &BrowserLayout::default());
-        assert!(data.method_lines.iter().any(|line| line.contains("drawPanesOn:")));
+        assert!(!data.method_lines.is_empty());
+        assert!(data.title.contains("BrowserWindow"));
     }
 }

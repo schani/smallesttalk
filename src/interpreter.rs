@@ -209,6 +209,7 @@ pub struct Vm {
     pub symbols: HashMap<String, Oop>,
     pub globals: HashMap<String, Oop>,
     method_owners: HashMap<Oop, u32>,
+    method_sources: HashMap<Oop, String>,
     closure_homes: HashMap<Oop, ClosureHome>,
     active_frame_ids: Vec<usize>,
     next_frame_id: usize,
@@ -244,6 +245,7 @@ impl Vm {
             symbols,
             globals,
             method_owners: HashMap::new(),
+            method_sources: HashMap::new(),
             closure_homes: HashMap::new(),
             active_frame_ids: Vec::new(),
             next_frame_id: 1,
@@ -722,6 +724,14 @@ impl Vm {
         self.heap.read_slot(association, 1)
     }
 
+    pub fn record_method_source(&mut self, method: Oop, source: &str) {
+        self.method_sources.insert(method, source.to_string());
+    }
+
+    pub fn method_source(&self, method: Oop) -> Option<&str> {
+        self.method_sources.get(&method).map(String::as_str)
+    }
+
     fn sync_heap_metadata(&mut self) {
         self.refresh_method_dictionary_objects();
         self.refresh_subclass_links();
@@ -786,6 +796,15 @@ impl Vm {
             }
             info.methods = new_methods;
         }
+        let old_sources = std::mem::take(&mut self.method_sources);
+        let mut new_sources = HashMap::with_capacity(old_sources.len());
+        for (mut method, source) in old_sources {
+            Self::remap_oop(relocated, &mut method);
+            if !method.is_nil() {
+                new_sources.insert(method, source);
+            }
+        }
+        self.method_sources = new_sources;
         let old_homes = std::mem::take(&mut self.closure_homes);
         let mut new_homes = HashMap::with_capacity(old_homes.len());
         for (mut closure, mut home) in old_homes {

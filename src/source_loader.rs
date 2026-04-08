@@ -86,7 +86,7 @@ fn load_source_with_mode(
 ) -> Result<SourceLoadSummary, SourceLoadError> {
     let mut summary = SourceLoadSummary::default();
     let mut methods_for_class: Option<String> = None;
-    let mut staged_methods: Vec<(u32, Oop, Oop)> = Vec::new();
+    let mut staged_methods: Vec<(u32, Oop, Oop, String)> = Vec::new();
     for chunk in split_chunks(source) {
         let trimmed_chunk = chunk.trim();
         if trimmed_chunk.is_empty() {
@@ -184,10 +184,11 @@ fn load_source_with_mode(
         }
     }
     if mode == LoadMode::SmalltalkTwoPhase {
-        for (class_index, selector_oop, method) in staged_methods {
+        for (class_index, selector_oop, method, source) in staged_methods {
             let selector_text = vm.symbol_text(selector_oop)?;
             let selector = vm.intern_symbol(&selector_text);
             vm.add_method(class_index, selector, method)?;
+            vm.record_method_source(method, &source);
         }
     }
     vm.install_gui_runtime_methods_if_available()?;
@@ -199,14 +200,15 @@ fn compile_method_chunk(
     mode: LoadMode,
     class_index: u32,
     source: &str,
-    staged_methods: &mut Vec<(u32, Oop, Oop)>,
+    staged_methods: &mut Vec<(u32, Oop, Oop, String)>,
 ) -> Result<(), SourceLoadError> {
     match mode {
         LoadMode::Rust => {
             compile_method_source(vm, class_index, source)?;
         }
         LoadMode::SmalltalkSinglePhase => {
-            compile_method_source_with_smalltalk_compiler(vm, class_index, source)?;
+            let method = compile_method_source_with_smalltalk_compiler(vm, class_index, source)?;
+            vm.record_method_source(method, source);
         }
         LoadMode::SmalltalkTwoPhase => {
             let (selector, method) = compile_method_source_with_smalltalk_compiler_without_install(
@@ -214,7 +216,7 @@ fn compile_method_chunk(
                 class_index,
                 source,
             )?;
-            staged_methods.push((class_index, selector, method));
+            staged_methods.push((class_index, selector, method, source.to_string()));
         }
     }
     Ok(())
