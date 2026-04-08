@@ -737,6 +737,19 @@ P := SectionPoint new. P x: 21
     }
 
     #[test]
+    fn gui_font_can_draw_text_on_form() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "F := Form new initializeWidth: 8 height: 7 depth: 1. Font := BitmapFont new initializeDefault. F drawString: 'A' atX: 0 y: 0 font: Font color: 1. F bits at: 1",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(112));
+    }
+
+    #[test]
     fn gui_world_can_render_a_solid_view() {
         let mut vm = Vm::new();
         load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
@@ -762,6 +775,27 @@ P := SectionPoint new. P x: 21
         .unwrap();
         let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
         assert_eq!(result.as_i64(), Some(126));
+    }
+
+    #[test]
+    fn gui_world_can_render_a_titled_window() {
+        std::thread::Builder::new()
+            .name("gui-titled-window".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut vm = Vm::new();
+                load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+                let method = crate::compile_doit(
+                    &mut vm,
+                    "W := World new initializeWidth: 32 height: 16 depth: 1. V := SystemWindow new initialize. V title: 'A'. O := Point new setX: 1 y: 1. C := Point new setX: 15 y: 12. R := Rectangle new setOrigin: O corner: C. V bounds: R. W addSubview: V. W render. W displayForm bits at: 6",
+                )
+                .unwrap();
+                let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+                assert_ne!(result.as_i64(), Some(0));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

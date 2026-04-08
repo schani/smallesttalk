@@ -2,7 +2,9 @@ Behavior subclass: #View instanceVariableNames: 'bounds subviews' classVariableN
 !
 View subclass: #SolidView instanceVariableNames: 'fillValue' classVariableNames: '' poolDictionaries: '' category: 'GUI-Views'
 !
-View subclass: #SystemWindow instanceVariableNames: 'fillValue borderValue titleBarValue titleBarHeight' classVariableNames: '' poolDictionaries: '' category: 'GUI-Views'
+View subclass: #LabelView instanceVariableNames: 'text font color' classVariableNames: '' poolDictionaries: '' category: 'GUI-Views'
+!
+View subclass: #SystemWindow instanceVariableNames: 'fillValue borderValue titleBarValue titleBarHeight title titleColor titleFont titleInset' classVariableNames: '' poolDictionaries: '' category: 'GUI-Views'
 !
 Behavior subclass: #World instanceVariableNames: 'hostDisplay displayForm rootView inputSensor' classVariableNames: '' poolDictionaries: '' category: 'GUI-World'
 !
@@ -77,6 +79,43 @@ drawOn: aForm
     ].
     ^ super drawOn: aForm
 !
+LabelView methodsFor: 'initialization'
+!
+initialize
+    super initialize.
+    text := ''.
+    font := BitmapFont new initializeDefault.
+    color := 1.
+    ^ self
+!
+LabelView methodsFor: 'accessing'
+!
+text
+    ^ text
+!
+text: anObject
+    text := anObject
+!
+font
+    ^ font
+!
+font: anObject
+    font := anObject
+!
+color
+    ^ color
+!
+color: anObject
+    color := anObject
+!
+LabelView methodsFor: 'drawing'
+!
+drawOn: aForm
+    bounds notNil ifTrue: [
+        aForm drawString: text atX: ((bounds origin) x) y: ((bounds origin) y) font: font color: color
+    ].
+    ^ super drawOn: aForm
+!
 SystemWindow methodsFor: 'initialization'
 !
 initialize
@@ -84,7 +123,11 @@ initialize
     fillValue := 0.
     borderValue := 1.
     titleBarValue := 1.
-    titleBarHeight := 2.
+    titleBarHeight := 8.
+    title := 'WINDOW'.
+    titleColor := 0.
+    titleFont := BitmapFont new initializeDefault.
+    titleInset := 2.
     ^ self
 !
 SystemWindow methodsFor: 'accessing'
@@ -113,24 +156,58 @@ titleBarHeight
 titleBarHeight: anObject
     titleBarHeight := anObject
 !
+title
+    ^ title
+!
+title: anObject
+    title := anObject
+!
+titleColor
+    ^ titleColor
+!
+titleColor: anObject
+    titleColor := anObject
+!
+titleFont
+    ^ titleFont
+!
+titleFont: anObject
+    titleFont := anObject
+!
+titleInset
+    ^ titleInset
+!
+titleInset: anObject
+    titleInset := anObject
+!
 SystemWindow methodsFor: 'drawing'
 !
 drawOn: aForm
-    | x y w h innerHeight |
+    | x y w h |
     bounds isNil ifTrue: [ ^ self ].
     x := (bounds origin) x.
     y := (bounds origin) y.
     w := bounds width.
     h := bounds height.
     aForm frameRectangleX: x y: y width: w height: h with: borderValue.
-    (w > 2 and: [ h > 2 ]) ifTrue: [
-        aForm fillRectangleX: x + 1 y: y + 1 width: w - 2 height: h - 2 with: fillValue
-    ].
-    innerHeight := titleBarHeight.
-    (w > 2 and: [ h > 2 and: [ innerHeight > 0 ] ]) ifTrue: [
-        aForm fillRectangleX: x + 1 y: y + 1 width: w - 2 height: innerHeight with: titleBarValue
-    ].
+    self drawInteriorOn: aForm atX: x y: y width: w height: h.
     ^ super drawOn: aForm
+!
+drawInteriorOn: aForm atX: x y: y width: w height: h
+    | innerHeight |
+    w <= 2 ifTrue: [ ^ self ].
+    h <= 2 ifTrue: [ ^ self ].
+    aForm fillRectangleX: x + 1 y: y + 1 width: w - 2 height: h - 2 with: fillValue.
+    innerHeight := titleBarHeight.
+    innerHeight > 0 ifTrue: [
+        aForm fillRectangleX: x + 1 y: y + 1 width: w - 2 height: innerHeight with: titleBarValue.
+        self drawTitleOn: aForm atX: x y: y
+    ].
+    ^ self
+!
+drawTitleOn: aForm atX: x y: y
+    aForm drawString: title atX: x + titleInset y: y + 1 font: titleFont color: titleColor.
+    ^ self
 !
 World methodsFor: 'initialization'
 !
