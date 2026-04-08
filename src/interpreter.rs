@@ -30,15 +30,15 @@ use crate::{
     primitives::{
         PRIMITIVE_AT, PRIMITIVE_AT_PUT, PRIMITIVE_BASIC_NEW, PRIMITIVE_BASIC_NEW_SIZED,
         PRIMITIVE_CLASS, PRIMITIVE_COMPILED_METHOD, PRIMITIVE_COPY_FROM_TO, PRIMITIVE_EQUALS,
+        PRIMITIVE_BLOCK_WHILE_FALSE, PRIMITIVE_BLOCK_WHILE_TRUE,
+        PRIMITIVE_FORM_COPY_RECTANGLE, PRIMITIVE_FORM_FILL_RECTANGLE,
         PRIMITIVE_GLOBAL_ASSOCIATION, PRIMITIVE_HOST_DISPLAY_OPEN,
         PRIMITIVE_HOST_DISPLAY_PRESENT_FORM, PRIMITIVE_HOST_DISPLAY_SAVE_PNG,
-        PRIMITIVE_HOST_NEXT_EVENT,
-        PRIMITIVE_INSTALL_COMPILED_METHOD, PRIMITIVE_INSTALL_METHOD,
-        PRIMITIVE_FORM_COPY_RECTANGLE, PRIMITIVE_FORM_FILL_RECTANGLE,
-        PRIMITIVE_INSTANCE_VARIABLE_INDEX,
-        PRIMITIVE_INTERN_SYMBOL, PRIMITIVE_MILLISECOND_CLOCK, PRIMITIVE_SIZE,
-        PRIMITIVE_SLEEP_MILLISECONDS, PRIMITIVE_SUBCLASS,
-        PRIMITIVE_SUBCLASS_EXTENDED, PRIMITIVE_THIS_CONTEXT,
+        PRIMITIVE_HOST_NEXT_EVENT, PRIMITIVE_INSTALL_COMPILED_METHOD,
+        PRIMITIVE_INSTALL_METHOD, PRIMITIVE_INSTANCE_VARIABLE_INDEX,
+        PRIMITIVE_INTERN_SYMBOL, PRIMITIVE_MILLISECOND_CLOCK,
+        PRIMITIVE_SIZE, PRIMITIVE_SLEEP_MILLISECONDS, PRIMITIVE_SMALL_INTEGER_TO_DO,
+        PRIMITIVE_SUBCLASS, PRIMITIVE_SUBCLASS_EXTENDED, PRIMITIVE_THIS_CONTEXT,
     },
     value::Oop,
 };
@@ -255,6 +255,8 @@ impl Vm {
         vm.rebuild_runtime_metadata();
         vm.sync_heap_metadata();
         crate::load_source(&mut vm, corelib::SOURCE).expect("core library source must load");
+        vm.install_control_runtime_methods()
+            .expect("control runtime methods must install");
         vm.install_gui_runtime_methods_if_available()
             .expect("gui runtime methods must install");
         vm
@@ -276,6 +278,17 @@ impl Vm {
         self.class_table
             .iter()
             .find_map(|(index, info)| (info.name == name).then_some(index))
+    }
+
+    pub(crate) fn install_control_runtime_methods(&mut self) -> Result<(), VmError> {
+        if let Some(block_closure) = self.class_index_by_name("BlockClosure") {
+            self.install_primitive_method(block_closure, "whileTrue:", 1, PRIMITIVE_BLOCK_WHILE_TRUE)?;
+            self.install_primitive_method(block_closure, "whileFalse:", 1, PRIMITIVE_BLOCK_WHILE_FALSE)?;
+        }
+        if let Some(small_integer) = self.class_index_by_name("SmallInteger") {
+            self.install_primitive_method(small_integer, "to:do:", 2, PRIMITIVE_SMALL_INTEGER_TO_DO)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn install_gui_runtime_methods_if_available(&mut self) -> Result<(), VmError> {
@@ -1033,6 +1046,18 @@ impl Vm {
                 let result = self.primitive_host_display_save_png(receiver, args)?;
                 Ok(ExecOutcome::Returned(result))
             }
+            PRIMITIVE_BLOCK_WHILE_TRUE => {
+                let result = self.primitive_block_while_true(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_BLOCK_WHILE_FALSE => {
+                let result = self.primitive_block_while_false(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_SMALL_INTEGER_TO_DO => {
+                let result = self.primitive_small_integer_to_do(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
             PRIMITIVE_HOST_NEXT_EVENT => {
                 let result = self.primitive_host_next_event(receiver, args)?;
                 Ok(ExecOutcome::Returned(result))
@@ -1330,6 +1355,52 @@ impl Vm {
         }
         self.add_method(class_index, selector, method)?;
         Ok(method)
+    }
+
+    fn primitive_block_while_true(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 1 {
+            return Err(VmError::WrongArgumentCount { expected: 1, actual: args.len() });
+        }
+        let value_selector = self.intern_symbol("value");
+        loop {
+            let condition = self.send(receiver, value_selector, &[])?;
+            if condition == self.false_oop() || condition.is_nil() {
+                return Ok(Oop::nil());
+            }
+            let _ = self.send(args[0], value_selector, &[])?;
+        }
+    }
+
+    fn primitive_block_while_false(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 1 {
+            return Err(VmError::WrongArgumentCount { expected: 1, actual: args.len() });
+        }
+        let value_selector = self.intern_symbol("value");
+        loop {
+            let condition = self.send(receiver, value_selector, &[])?;
+            if condition == self.true_oop() {
+                return Ok(Oop::nil());
+            }
+            let _ = self.send(args[0], value_selector, &[])?;
+        }
+    }
+
+    fn primitive_small_integer_to_do(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 2 {
+            return Err(VmError::WrongArgumentCount { expected: 2, actual: args.len() });
+        }
+        let start = receiver
+            .as_i64()
+            .ok_or(VmError::TypeError("to:do: expects SmallInteger receiver"))?;
+        let limit = args[0]
+            .as_i64()
+            .ok_or(VmError::TypeError("to:do: expects SmallInteger limit"))?;
+        let value_selector = self.intern_symbol("value:");
+        for index in start..=limit {
+            let value = Oop::from_i64(index).ok_or(VmError::TypeError("SmallInteger out of range"))?;
+            let _ = self.send(args[1], value_selector, &[value])?;
+        }
+        Ok(receiver)
     }
 
     fn primitive_host_display_open(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {

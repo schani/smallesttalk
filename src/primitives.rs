@@ -24,6 +24,9 @@ pub const PRIMITIVE_SLEEP_MILLISECONDS: u16 = 22;
 pub const PRIMITIVE_FORM_FILL_RECTANGLE: u16 = 23;
 pub const PRIMITIVE_FORM_COPY_RECTANGLE: u16 = 24;
 pub const PRIMITIVE_HOST_DISPLAY_SAVE_PNG: u16 = 25;
+pub const PRIMITIVE_BLOCK_WHILE_TRUE: u16 = 26;
+pub const PRIMITIVE_BLOCK_WHILE_FALSE: u16 = 27;
+pub const PRIMITIVE_SMALL_INTEGER_TO_DO: u16 = 28;
 
 #[inline]
 pub fn primitive_index(flags: u32) -> u16 {

@@ -6,3 +6,5 @@ include smalltalk/gui/Fonts.st
 !
 include smalltalk/gui/World.st
 !
+include smalltalk/gui/Tools.st
+!

@@ -799,6 +799,40 @@ P := SectionPoint new. P x: 21
     }
 
     #[test]
+    fn transcript_window_accumulates_lines() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "T := TranscriptWindow new initialize. T show: 'ONE'. T show: 'TWO'. T lines size",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(2));
+    }
+
+    #[test]
+    fn gui_world_can_render_a_transcript_window() {
+        std::thread::Builder::new()
+            .name("gui-transcript-window".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut vm = Vm::new();
+                load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+                let method = crate::compile_doit(
+                    &mut vm,
+                    "W := World new initializeWidth: 64 height: 48 depth: 1. T := TranscriptWindow new initialize. O := Point new setX: 1 y: 1. C := Point new setX: 63 y: 47. R := Rectangle new setOrigin: O corner: C. T bounds: R. T show: 'READY'. T show: 'SNAPSHOT'. W addSubview: T. W render. W displayForm bits at: 25",
+                )
+                .unwrap();
+                let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+                assert_ne!(result.as_i64(), Some(0));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn gui_input_sensor_decodes_mouse_events() {
         let mut vm = Vm::new();
         load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
