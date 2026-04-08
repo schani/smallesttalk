@@ -867,6 +867,27 @@ P := SectionPoint new. P x: 21
     }
 
     #[test]
+    fn gui_world_can_render_a_browser_window() {
+        std::thread::Builder::new()
+            .name("gui-browser-window".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut vm = Vm::new();
+                load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+                let method = crate::compile_doit(
+                    &mut vm,
+                    "W := World new initializeWidth: 96 height: 64 depth: 1. B := BrowserWindow new initialize. O := Point new setX: 1 y: 1. C := Point new setX: 95 y: 63. R := Rectangle new setOrigin: O corner: C. A := Array new: 2. A at: 1 put: 'POINT'. A at: 2 put: 'FORM'. M := Array new: 2. M at: 1 put: 'DRAWON:'. M at: 2 put: 'WIDTH'. S := Array new: 2. S at: 1 put: 'DRAWON: AFORM'. S at: 2 put: '^ SELF'. B bounds: R. B classList: A. B methodList: M. B sourceLines: S. W addSubview: B. W render. W displayForm bits at: 33",
+                )
+                .unwrap();
+                let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+                assert_ne!(result.as_i64(), Some(0));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn gui_input_sensor_decodes_mouse_events() {
         let mut vm = Vm::new();
         load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
