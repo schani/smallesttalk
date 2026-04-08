@@ -2,10 +2,13 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
+
 };
 
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 use smallesttalk::{
     Format, Oop, Vm, compile_doit, compile_method_source, image, load_source,
+    live_browser::{BrowserLayout, LiveBrowser, apply_browser_view, send_message},
     load_source_with_smalltalk_compiler, load_source_with_smalltalk_compiler_two_phase,
 };
 
@@ -292,6 +295,18 @@ fn repl(mut vm: Vm, mut image_path: PathBuf) -> io::Result<()> {
     Ok(())
 }
 
+fn load_source_file_into_vm(vm: &mut Vm, path: &Path) -> Result<(), String> {
+    let source = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let summary = load_source(vm, &source)
+        .map_err(|err| format!("failed to load {}: {err}", path.display()))?;
+    println!(
+        "loaded source: classes={}, methods={}, doits={}",
+        summary.classes, summary.methods, summary.doits
+    );
+    Ok(())
+}
+
 fn run_source_file(path: &Path) -> Result<(), String> {
     let path = path.to_path_buf();
     std::thread::Builder::new()
@@ -299,19 +314,213 @@ fn run_source_file(path: &Path) -> Result<(), String> {
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
             let mut vm = Vm::new();
-            let source = fs::read_to_string(&path)
-                .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-            let summary = load_source(&mut vm, &source)
-                .map_err(|err| format!("failed to load {}: {err}", path.display()))?;
-            println!(
-                "loaded source: classes={}, methods={}, doits={}",
-                summary.classes, summary.methods, summary.doits
-            );
+            load_source_file_into_vm(&mut vm, &path)?;
             Ok::<(), String>(())
         })
         .map_err(|err| format!("failed to spawn render thread: {err}"))?
         .join()
         .map_err(|_| "render thread panicked".to_string())?
+}
+
+fn small_int(value: i64) -> Result<Oop, String> {
+    Oop::from_i64(value).ok_or_else(|| format!("SmallInteger out of range: {value}"))
+}
+
+fn build_live_browser_ui(vm: &mut Vm, layout: &BrowserLayout) -> Result<(Oop, Oop, u32), String> {
+    load_source(vm, include_str!("../smalltalk/gui/Bootstrap.st"))
+        .map_err(|err| format!("failed to load GUI bootstrap: {err}"))?;
+
+    let world_class = vm.global_value("World").ok_or("World class missing")?;
+    let browser_class = vm
+        .global_value("BrowserWindow")
+        .ok_or("BrowserWindow class missing")?;
+    let rectangle_class = vm.global_value("Rectangle").ok_or("Rectangle class missing")?;
+
+    let world = send_message(vm, world_class, "new", &[]).map_err(|err| err.to_string())?;
+    send_message(
+        vm,
+        world,
+        "initializeWidth:height:depth:",
+        &[
+            small_int(layout.width as i64)?,
+            small_int(layout.height as i64)?,
+            small_int(1)?,
+        ],
+    )
+    .map_err(|err| err.to_string())?;
+
+    let browser = send_message(vm, browser_class, "new", &[]).map_err(|err| err.to_string())?;
+    send_message(vm, browser, "initialize", &[]).map_err(|err| err.to_string())?;
+    send_message(
+        vm,
+        browser,
+        "classPaneWidth:",
+        &[small_int(layout.class_pane_width as i64)?],
+    )
+    .map_err(|err| err.to_string())?;
+    send_message(
+        vm,
+        browser,
+        "methodPaneHeight:",
+        &[small_int(layout.method_pane_height as i64)?],
+    )
+    .map_err(|err| err.to_string())?;
+
+    let rect = send_message(vm, rectangle_class, "new", &[]).map_err(|err| err.to_string())?;
+    let (x, y, w, h) = layout.browser_bounds();
+    send_message(
+        vm,
+        rect,
+        "setX:y:width:height:",
+        &[small_int(x)?, small_int(y)?, small_int(w)?, small_int(h)?],
+    )
+    .map_err(|err| err.to_string())?;
+    send_message(vm, browser, "bounds:", &[rect]).map_err(|err| err.to_string())?;
+    send_message(vm, world, "addSubview:", &[browser]).map_err(|err| err.to_string())?;
+
+    let host_display = send_message(vm, world, "hostDisplay", &[]).map_err(|err| err.to_string())?;
+    let handle = send_message(vm, host_display, "handle", &[]).map_err(|err| err.to_string())?;
+    let handle = handle.as_i64().ok_or("HostDisplay handle missing")? as u32;
+    Ok((world, browser, handle))
+}
+
+fn snapshot_to_argb(snapshot: &smallesttalk::interpreter::HostDisplaySnapshot) -> Vec<u32> {
+    match snapshot.depth {
+        1 => (0..(snapshot.width * snapshot.height))
+            .map(|pixel_index| {
+                let byte = snapshot.last_frame.get(pixel_index / 8).copied().unwrap_or(0);
+                let bit = 1u8 << (7 - (pixel_index % 8));
+                if (byte & bit) != 0 {
+                    0xff000000
+                } else {
+                    0xffffffff
+                }
+            })
+            .collect(),
+        8 => snapshot
+            .last_frame
+            .iter()
+            .map(|value| {
+                let value = *value as u32;
+                0xff000000 | (value << 16) | (value << 8) | value
+            })
+            .collect(),
+        _ => vec![0xffffffff; snapshot.width * snapshot.height],
+    }
+}
+
+fn render_live_browser_snapshot(output_path: &Path, paths: &[String]) -> Result<(), String> {
+    let mut vm = Vm::new();
+    let layout = BrowserLayout::default();
+    for path in paths {
+        load_source_file_into_vm(&mut vm, Path::new(path))?;
+    }
+    let (world, browser_window, handle) = build_live_browser_ui(&mut vm, &layout)?;
+    let browser = LiveBrowser::new(&vm);
+    let view = browser.view_data(&vm, &layout);
+    apply_browser_view(&mut vm, browser_window, &view).map_err(|err| err.to_string())?;
+    let render_selector = vm.intern_symbol("render");
+    vm.send(world, render_selector, &[]).map_err(|err| err.to_string())?;
+    let snapshot = vm
+        .host_display_snapshot(handle)
+        .ok_or("no host display snapshot available")?;
+    smallesttalk::gui_snapshot::write_display_png(
+        output_path,
+        snapshot.width,
+        snapshot.height,
+        snapshot.depth,
+        &snapshot.last_frame,
+    )
+    .map_err(|err| format!("failed to save {}: {err}", output_path.display()))?;
+    println!("saved {}", output_path.display());
+    Ok(())
+}
+
+fn run_live_browser(paths: &[String]) -> Result<(), String> {
+    let mut vm = Vm::new();
+    let layout = BrowserLayout::default();
+    for path in paths {
+        load_source_file_into_vm(&mut vm, Path::new(path))?;
+    }
+    let (world, browser_window, handle) = build_live_browser_ui(&mut vm, &layout)?;
+    let mut browser = LiveBrowser::new(&vm);
+    let mut window = Window::new(
+        "Smallesttalk Live Browser",
+        layout.width,
+        layout.height,
+        WindowOptions::default(),
+    )
+    .map_err(|err| format!("failed to open window: {err}"))?;
+    let render_selector = vm.intern_symbol("render");
+    let mut last_mouse_down = false;
+    let mut dirty = true;
+    while window.is_open() {
+        for key in window.get_keys_pressed(KeyRepeat::Yes) {
+            match key {
+                Key::Escape | Key::Q => return Ok(()),
+                Key::Up => {
+                    browser.move_up(&vm);
+                    dirty = true;
+                }
+                Key::Down => {
+                    browser.move_down(&vm);
+                    dirty = true;
+                }
+                Key::Left => {
+                    browser.focus_left();
+                    dirty = true;
+                }
+                Key::Right => {
+                    browser.focus_right();
+                    dirty = true;
+                }
+                Key::Tab => {
+                    browser.toggle_focus();
+                    dirty = true;
+                }
+                Key::R => {
+                    browser.refresh(&vm);
+                    dirty = true;
+                }
+                _ => {}
+            }
+        }
+
+        let mouse_down = window.get_mouse_down(MouseButton::Left);
+        if mouse_down && !last_mouse_down {
+            if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Clamp) {
+                let mx = mx.max(0.0) as usize;
+                let my = my.max(0.0) as usize;
+                if let Some(row) = layout.class_hit_row(mx, my) {
+                    browser.click_class_row(&vm, &layout, row);
+                    dirty = true;
+                } else if let Some(row) = layout.method_hit_row(mx, my) {
+                    browser.click_method_row(&vm, &layout, row);
+                    dirty = true;
+                }
+            }
+        }
+        last_mouse_down = mouse_down;
+
+        if dirty {
+            browser.refresh(&vm);
+            let view = browser.view_data(&vm, &layout);
+            apply_browser_view(&mut vm, browser_window, &view).map_err(|err| err.to_string())?;
+            vm.send(world, render_selector, &[]).map_err(|err| err.to_string())?;
+            let snapshot = vm
+                .host_display_snapshot(handle)
+                .ok_or("no host display snapshot available")?;
+            let buffer = snapshot_to_argb(&snapshot);
+            window.set_title(&view.title);
+            window
+                .update_with_buffer(&buffer, snapshot.width, snapshot.height)
+                .map_err(|err| format!("failed to present browser window: {err}"))?;
+            dirty = false;
+        } else {
+            window.update();
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -324,6 +533,26 @@ fn main() {
             };
             if let Err(err) = run_source_file(Path::new(&path)) {
                 eprintln!("render failed: {err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        if first == "browsepng" {
+            let Some(path) = args.next() else {
+                eprintln!("usage: cargo run -- browsepng OUT.png [FILE ...]");
+                std::process::exit(2);
+            };
+            let paths = args.collect::<Vec<_>>();
+            if let Err(err) = render_live_browser_snapshot(Path::new(&path), &paths) {
+                eprintln!("browsepng failed: {err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        if first == "browse" {
+            let paths = args.collect::<Vec<_>>();
+            if let Err(err) = run_live_browser(&paths) {
+                eprintln!("browse failed: {err}");
                 std::process::exit(1);
             }
             return;

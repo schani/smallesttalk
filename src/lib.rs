@@ -8,6 +8,7 @@ pub mod gui_snapshot;
 pub mod heap;
 pub mod image;
 pub mod interpreter;
+pub mod live_browser;
 pub mod method_cache;
 pub mod object;
 pub mod primitives;
