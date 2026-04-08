@@ -25,13 +25,13 @@ pub struct BrowserLayout {
 impl Default for BrowserLayout {
     fn default() -> Self {
         Self {
-            width: 256,
-            height: 160,
-            margin: 8,
+            width: 1024,
+            height: 768,
+            margin: 12,
             title_bar_height: 8,
             line_height: 8,
-            class_pane_width: 96,
-            method_pane_height: 56,
+            class_pane_width: 300,
+            method_pane_height: 220,
         }
     }
 }
@@ -245,20 +245,20 @@ impl LiveBrowser {
             .enumerate()
             .skip(class_start)
             .take(layout.classes_visible_rows())
-            .map(|(index, name)| truncate_text(&decorate_line(name, index == self.selected_class, self.focus == BrowserFocus::Classes), 28))
+            .map(|(index, name)| truncate_text(&decorate_line(name, index == self.selected_class, self.focus == BrowserFocus::Classes), 44))
             .collect();
         let method_lines = method_names
             .iter()
             .enumerate()
             .skip(method_start)
             .take(layout.methods_visible_rows())
-            .map(|(index, name)| truncate_text(&decorate_line(name, index == self.selected_method, self.focus == BrowserFocus::Methods), 36))
+            .map(|(index, name)| truncate_text(&decorate_line(name, index == self.selected_method, self.focus == BrowserFocus::Methods), 68))
             .collect();
 
         let mut source_lines = self
             .source_lines(vm)
             .into_iter()
-            .map(|line| truncate_text(&line, 24))
+            .map(|line| truncate_text(&line, 92))
             .collect::<Vec<_>>();
         source_lines.truncate(layout.source_visible_rows().max(1));
         let title = match (self.current_class_name(vm), self.current_method_names(vm).get(self.selected_method)) {

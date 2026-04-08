@@ -11,7 +11,7 @@ initialize
     self title: 'TRANSCRIPT'.
     lines := Array new: 0.
     maxLines := 16.
-    textFont := BitmapFont new initializeDefault.
+    textFont := StrikeFont new initializeDefault.
     lineHeight := 8.
     textInset := 2.
     ^ self
@@ -104,7 +104,7 @@ initialize
     super initialize.
     self title: 'WORKSPACE'.
     lines := Array new: 0.
-    textFont := BitmapFont new initializeDefault.
+    textFont := StrikeFont new initializeDefault.
     lineHeight := 8.
     textInset := 2.
     ^ self
@@ -182,7 +182,7 @@ initialize
     classList := Array new: 0.
     methodList := Array new: 0.
     sourceLines := Array new: 0.
-    textFont := BitmapFont new initializeDefault.
+    textFont := StrikeFont new initializeDefault.
     lineHeight := 8.
     textInset := 2.
     classPaneWidth := 48.

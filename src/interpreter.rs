@@ -31,8 +31,8 @@ use crate::{
         PRIMITIVE_AT, PRIMITIVE_AT_PUT, PRIMITIVE_BASIC_NEW, PRIMITIVE_BASIC_NEW_SIZED,
         PRIMITIVE_CLASS, PRIMITIVE_COMPILED_METHOD, PRIMITIVE_COPY_FROM_TO, PRIMITIVE_EQUALS,
         PRIMITIVE_BLOCK_WHILE_FALSE, PRIMITIVE_BLOCK_WHILE_TRUE,
-        PRIMITIVE_FORM_COPY_RECTANGLE, PRIMITIVE_FORM_FILL_RECTANGLE,
-        PRIMITIVE_GLOBAL_ASSOCIATION, PRIMITIVE_HOST_DISPLAY_OPEN,
+        PRIMITIVE_FONT_DRAW_STRING, PRIMITIVE_FORM_COPY_RECTANGLE,
+        PRIMITIVE_FORM_FILL_RECTANGLE, PRIMITIVE_GLOBAL_ASSOCIATION, PRIMITIVE_HOST_DISPLAY_OPEN,
         PRIMITIVE_HOST_DISPLAY_PRESENT_FORM, PRIMITIVE_HOST_DISPLAY_SAVE_PNG,
         PRIMITIVE_HOST_NEXT_EVENT, PRIMITIVE_INSTALL_COMPILED_METHOD,
         PRIMITIVE_INSTALL_METHOD, PRIMITIVE_INSTANCE_VARIABLE_INDEX,
@@ -304,6 +304,9 @@ impl Vm {
         if let Some(host_display) = self.class_index_by_name("HostDisplay") {
             self.install_primitive_method(host_display, "presentForm:", 1, PRIMITIVE_HOST_DISPLAY_PRESENT_FORM)?;
             self.install_primitive_method(host_display, "savePNG:", 1, PRIMITIVE_HOST_DISPLAY_SAVE_PNG)?;
+        }
+        if let Some(bitmap_font) = self.class_index_by_name("BitmapFont") {
+            self.install_primitive_method(bitmap_font, "drawString:on:atX:y:color:", 5, PRIMITIVE_FONT_DRAW_STRING)?;
         }
         if let Some(form) = self.class_index_by_name("Form") {
             self.install_primitive_method(form, "fillRectangleX:y:width:height:with:", 5, PRIMITIVE_FORM_FILL_RECTANGLE)?;
@@ -1099,6 +1102,10 @@ impl Vm {
                 let result = self.primitive_form_copy_rectangle(receiver, args)?;
                 Ok(ExecOutcome::Returned(result))
             }
+            PRIMITIVE_FONT_DRAW_STRING => {
+                let result = self.primitive_font_draw_string(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
             PRIMITIVE_GLOBAL_ASSOCIATION => {
                 let result = self.primitive_global_association(receiver, args)?;
                 Ok(ExecOutcome::Returned(result))
@@ -1603,6 +1610,188 @@ impl Vm {
             std::thread::sleep(Duration::from_millis(millis as u64));
         }
         Ok(Oop::nil())
+    }
+
+    fn canvas_state(
+        &self,
+        canvas: Oop,
+    ) -> Result<(Oop, usize, usize, usize, Oop, usize, usize, usize, usize), VmError> {
+        let canvas_class = self.class_of(canvas)?;
+        let canvas_info = self
+            .class_table
+            .get(canvas_class)
+            .ok_or(VmError::InvalidClassIndex(canvas_class))?;
+        if canvas_info.name != "Canvas" {
+            return Err(VmError::TypeError("expected Canvas receiver"));
+        }
+        let form = self.heap.read_slot(canvas, 0).ok_or(VmError::TypeError("Canvas form missing"))?;
+        let clip_rect = self.heap.read_slot(canvas, 1).ok_or(VmError::TypeError("Canvas clipRect missing"))?;
+        let origin = self.heap.read_slot(canvas, 2).ok_or(VmError::TypeError("Canvas origin missing"))?;
+        let form_width = self.heap.read_slot(form, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form width missing"))? as usize;
+        let form_height = self.heap.read_slot(form, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form height missing"))? as usize;
+        let depth = self.heap.read_slot(form, 2).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form depth missing"))? as usize;
+        let bits = self.heap.read_slot(form, 3).ok_or(VmError::TypeError("Form bits missing"))?;
+        let origin_x = self.heap.read_slot(origin, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Point x missing"))? as usize;
+        let origin_y = self.heap.read_slot(origin, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Point y missing"))? as usize;
+        let clip_origin = self.heap.read_slot(clip_rect, 0).ok_or(VmError::TypeError("Rectangle origin missing"))?;
+        let clip_corner = self.heap.read_slot(clip_rect, 1).ok_or(VmError::TypeError("Rectangle corner missing"))?;
+        let clip_left = self.heap.read_slot(clip_origin, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Rectangle x missing"))? as usize;
+        let clip_top = self.heap.read_slot(clip_origin, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Rectangle y missing"))? as usize;
+        let clip_right = self.heap.read_slot(clip_corner, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Rectangle right missing"))? as usize;
+        let clip_bottom = self.heap.read_slot(clip_corner, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Rectangle bottom missing"))? as usize;
+        Ok((form, form_width, form_height, depth, bits, origin_x, origin_y, clip_left.min(clip_right), clip_top.min(clip_bottom.saturating_sub(0))))
+    }
+
+    fn strike_glyph_rows(code: u8) -> [u8; 7] {
+        match code {
+            32 => [0, 0, 0, 0, 0, 0, 0],
+            35 => [10, 31, 10, 10, 31, 10, 0],
+            39 => [4, 4, 8, 0, 0, 0, 0],
+            40 => [2, 4, 8, 8, 8, 4, 2],
+            41 => [8, 4, 2, 2, 2, 4, 8],
+            42 => [0, 10, 4, 31, 4, 10, 0],
+            43 => [0, 4, 4, 31, 4, 4, 0],
+            44 => [0, 0, 0, 0, 12, 12, 8],
+            45 => [0, 0, 0, 31, 0, 0, 0],
+            46 => [0, 0, 0, 0, 0, 12, 12],
+            47 => [1, 2, 4, 8, 16, 0, 0],
+            48 => [14, 17, 19, 21, 25, 17, 14],
+            49 => [4, 12, 4, 4, 4, 4, 14],
+            50 => [14, 17, 1, 2, 4, 8, 31],
+            51 => [30, 1, 1, 14, 1, 1, 30],
+            52 => [2, 6, 10, 18, 31, 2, 2],
+            53 => [31, 16, 16, 30, 1, 1, 30],
+            54 => [14, 16, 16, 30, 17, 17, 14],
+            55 => [31, 1, 2, 4, 8, 8, 8],
+            56 => [14, 17, 17, 14, 17, 17, 14],
+            57 => [14, 17, 17, 15, 1, 1, 14],
+            58 => [0, 12, 12, 0, 12, 12, 0],
+            59 => [0, 12, 12, 0, 12, 12, 8],
+            60 => [2, 4, 8, 16, 8, 4, 2],
+            61 => [0, 31, 0, 31, 0, 0, 0],
+            62 => [8, 4, 2, 1, 2, 4, 8],
+            63 => [14, 17, 1, 2, 4, 0, 4],
+            64 => [14, 17, 1, 13, 21, 21, 14],
+            65 => [14, 17, 17, 31, 17, 17, 17],
+            66 => [30, 17, 17, 30, 17, 17, 30],
+            67 => [14, 17, 16, 16, 16, 17, 14],
+            68 => [30, 17, 17, 17, 17, 17, 30],
+            69 => [31, 16, 16, 30, 16, 16, 31],
+            70 => [31, 16, 16, 30, 16, 16, 16],
+            71 => [14, 17, 16, 23, 17, 17, 14],
+            72 => [17, 17, 17, 31, 17, 17, 17],
+            73 => [14, 4, 4, 4, 4, 4, 14],
+            74 => [1, 1, 1, 1, 17, 17, 14],
+            75 => [17, 18, 20, 24, 20, 18, 17],
+            76 => [16, 16, 16, 16, 16, 16, 31],
+            77 => [17, 27, 21, 21, 17, 17, 17],
+            78 => [17, 17, 25, 21, 19, 17, 17],
+            79 => [14, 17, 17, 17, 17, 17, 14],
+            80 => [30, 17, 17, 30, 16, 16, 16],
+            81 => [14, 17, 17, 17, 21, 18, 13],
+            82 => [30, 17, 17, 30, 20, 18, 17],
+            83 => [15, 16, 16, 14, 1, 1, 30],
+            84 => [31, 4, 4, 4, 4, 4, 4],
+            85 => [17, 17, 17, 17, 17, 17, 14],
+            86 => [17, 17, 17, 17, 17, 10, 4],
+            87 => [17, 17, 17, 21, 21, 21, 10],
+            88 => [17, 17, 10, 4, 10, 17, 17],
+            89 => [17, 17, 10, 4, 4, 4, 4],
+            90 => [31, 1, 2, 4, 8, 16, 31],
+            91 => [14, 8, 8, 8, 8, 8, 14],
+            93 => [14, 2, 2, 2, 2, 2, 14],
+            94 => [4, 10, 17, 0, 0, 0, 0],
+            95 => [0, 0, 0, 0, 0, 0, 31],
+            96 => [8, 4, 2, 0, 0, 0, 0],
+            97 => [0, 0, 14, 1, 15, 17, 15],
+            98 => [16, 16, 22, 25, 17, 17, 30],
+            99 => [0, 0, 14, 16, 16, 17, 14],
+            100 => [1, 1, 13, 19, 17, 17, 15],
+            101 => [0, 0, 14, 17, 31, 16, 14],
+            102 => [6, 8, 8, 30, 8, 8, 8],
+            103 => [0, 15, 17, 17, 15, 1, 14],
+            104 => [16, 16, 22, 25, 17, 17, 17],
+            105 => [4, 0, 12, 4, 4, 4, 14],
+            106 => [2, 0, 6, 2, 2, 18, 12],
+            107 => [16, 16, 18, 20, 24, 20, 18],
+            108 => [12, 4, 4, 4, 4, 4, 14],
+            109 => [0, 0, 26, 21, 21, 21, 21],
+            110 => [0, 0, 22, 25, 17, 17, 17],
+            111 => [0, 0, 14, 17, 17, 17, 14],
+            112 => [0, 0, 30, 17, 30, 16, 16],
+            113 => [0, 0, 13, 19, 15, 1, 1],
+            114 => [0, 0, 22, 25, 16, 16, 16],
+            115 => [0, 0, 15, 16, 14, 1, 30],
+            116 => [8, 8, 30, 8, 8, 8, 6],
+            117 => [0, 0, 17, 17, 17, 19, 13],
+            118 => [0, 0, 17, 17, 17, 10, 4],
+            119 => [0, 0, 17, 17, 21, 21, 10],
+            120 => [0, 0, 17, 10, 4, 10, 17],
+            121 => [0, 0, 17, 17, 15, 1, 14],
+            122 => [0, 0, 31, 2, 4, 8, 31],
+            123 => [2, 4, 4, 8, 4, 4, 2],
+            124 => [4, 4, 4, 4, 4, 4, 4],
+            125 => [8, 4, 4, 2, 4, 4, 8],
+            _ => [31, 17, 2, 4, 8, 0, 8],
+        }
+    }
+
+    fn primitive_font_draw_string(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 5 {
+            return Err(VmError::WrongArgumentCount { expected: 5, actual: args.len() });
+        }
+        let text = self.symbol_text(args[0])?;
+        let canvas = args[1];
+        let start_x = args[2].as_i64().ok_or(VmError::TypeError("x must be SmallInteger"))?;
+        let start_y = args[3].as_i64().ok_or(VmError::TypeError("y must be SmallInteger"))?;
+        let color = args[4].as_i64().ok_or(VmError::TypeError("color must be SmallInteger"))?;
+        let (_form, form_width, form_height, depth, bits, origin_x, origin_y, clip_left, clip_top) = self.canvas_state(canvas)?;
+        if depth != 1 {
+            return Err(VmError::TypeError("drawString only supports depth 1 canvases"));
+        }
+        let clip_rect = self.heap.read_slot(canvas, 1).ok_or(VmError::TypeError("Canvas clipRect missing"))?;
+        let clip_corner = self.heap.read_slot(clip_rect, 1).ok_or(VmError::TypeError("Rectangle corner missing"))?;
+        let clip_right = self.heap.read_slot(clip_corner, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Rectangle right missing"))? as usize;
+        let clip_bottom = self.heap.read_slot(clip_corner, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Rectangle bottom missing"))? as usize;
+        let mut bytes = self.heap.bytes(bits).ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+        let mut cursor_x = start_x + origin_x as i64;
+        let cursor_y = start_y + origin_y as i64;
+        for ch in text.bytes() {
+            if cursor_x as usize >= clip_right {
+                break;
+            }
+            let rows = Self::strike_glyph_rows(ch);
+            for (row, row_bits) in rows.into_iter().enumerate() {
+                let py = cursor_y + row as i64;
+                if py < clip_top as i64 || py >= clip_bottom as i64 || py < 0 || py >= form_height as i64 {
+                    continue;
+                }
+                for col in 0..5usize {
+                    let px = cursor_x + col as i64;
+                    if px < clip_left as i64 || px >= clip_right as i64 || px < 0 || px >= form_width as i64 {
+                        continue;
+                    }
+                    let mask = 1u8 << (4 - col);
+                    if (row_bits & mask) == 0 {
+                        continue;
+                    }
+                    let pixel_index = py as usize * form_width + px as usize;
+                    let byte_index = pixel_index / 8;
+                    let bit_index = 7 - (pixel_index % 8);
+                    let pixel_mask = 1u8 << bit_index;
+                    if color == 0 {
+                        bytes[byte_index] &= !pixel_mask;
+                    } else {
+                        bytes[byte_index] |= pixel_mask;
+                    }
+                }
+            }
+            cursor_x += 6;
+        }
+        for (index, byte) in bytes.into_iter().enumerate() {
+            let _ = self.heap.write_byte(bits, index, byte);
+        }
+        Ok(canvas)
     }
 
     fn primitive_form_fill_rectangle(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {

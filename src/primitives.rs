@@ -27,6 +27,7 @@ pub const PRIMITIVE_HOST_DISPLAY_SAVE_PNG: u16 = 25;
 pub const PRIMITIVE_BLOCK_WHILE_TRUE: u16 = 26;
 pub const PRIMITIVE_BLOCK_WHILE_FALSE: u16 = 27;
 pub const PRIMITIVE_SMALL_INTEGER_TO_DO: u16 = 28;
+pub const PRIMITIVE_FONT_DRAW_STRING: u16 = 29;
 
 #[inline]
 pub fn primitive_index(flags: u32) -> u16 {

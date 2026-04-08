@@ -94,7 +94,7 @@ LabelView methodsFor: 'initialization'
 initialize
     super initialize.
     text := ''.
-    font := BitmapFont new initializeDefault.
+    font := StrikeFont new initializeDefault.
     color := 1.
     ^ self
 !
@@ -136,7 +136,7 @@ initialize
     titleBarHeight := 8.
     title := 'WINDOW'.
     titleColor := 0.
-    titleFont := BitmapFont new initializeDefault.
+    titleFont := StrikeFont new initializeDefault.
     titleInset := 2.
     ^ self
 !

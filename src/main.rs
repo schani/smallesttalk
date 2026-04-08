@@ -458,6 +458,7 @@ fn render_browser_frame(
 fn run_live_browser(paths: &[String]) -> Result<(), String> {
     let mut vm = Vm::new();
     let layout = BrowserLayout::default();
+    let debug_mouse = std::env::var_os("SMALLESTTALK_BROWSER_DEBUG").is_some();
     for path in paths {
         load_source_file_into_vm(&mut vm, Path::new(path))?;
     }
@@ -520,18 +521,35 @@ fn run_live_browser(paths: &[String]) -> Result<(), String> {
                 let mx = mx.max(0.0) as usize;
                 let my = my.max(0.0) as usize;
                 if let Some(row) = layout.class_hit_row(mx, my) {
+                    if debug_mouse {
+                        eprintln!("browser mouse class hit: x={mx} y={my} row={row}");
+                    }
                     browser.click_class_row(&vm, &layout, row);
                     dirty = true;
                 } else if let Some(row) = layout.method_hit_row(mx, my) {
+                    if debug_mouse {
+                        eprintln!("browser mouse method hit: x={mx} y={my} row={row}");
+                    }
                     browser.click_method_row(&vm, &layout, row);
                     dirty = true;
+                } else if debug_mouse {
+                    eprintln!("browser mouse miss: x={mx} y={my}");
                 }
+            } else if debug_mouse {
+                eprintln!("browser mouse position unavailable");
             }
         }
         last_mouse_down = mouse_down;
 
         if dirty {
             browser.refresh(&vm);
+            if debug_mouse {
+                eprintln!(
+                    "browser redraw: class={:?} title={}",
+                    browser.current_class_name(&vm),
+                    title,
+                );
+            }
             let frame = render_browser_frame(
                 &mut vm,
                 world,
