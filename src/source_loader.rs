@@ -190,6 +190,7 @@ fn load_source_with_mode(
             vm.add_method(class_index, selector, method)?;
         }
     }
+    vm.install_gui_runtime_methods_if_available()?;
     Ok(summary)
 }
 
@@ -349,7 +350,7 @@ mod tests {
         load_source, load_source_with_smalltalk_compiler,
         load_source_with_smalltalk_compiler_two_phase,
     };
-    use crate::{Oop, Vm};
+    use crate::{interpreter::HostEvent, Oop, Vm};
 
     #[test]
     fn loads_classes_methods_and_doits() {
@@ -675,5 +676,128 @@ P := SectionPoint new. P x: 21
         let _ = vm.send(object, set_selector, &[Oop::from_i64(41).unwrap()]).unwrap();
         let result = vm.send(object, get_selector, &[]).unwrap();
         assert_eq!(result.as_i64(), Some(41));
+    }
+
+    #[test]
+    fn gui_kernel_can_open_host_display_and_present_form() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Kernel.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "D := Behavior hostDisplayOpenWidth: 16 height: 8 depth: 1. F := Form new initializeWidth: 16 height: 8 depth: 1. D presentForm: F. D handle",
+        )
+        .unwrap();
+        let handle = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        let snapshot = vm.host_display_snapshot(handle.as_i64().unwrap() as u32).unwrap();
+        assert_eq!(snapshot.width, 16);
+        assert_eq!(snapshot.height, 8);
+        assert_eq!(snapshot.depth, 1);
+        assert_eq!(snapshot.presents, 1);
+        assert_eq!(snapshot.last_frame.len(), 16 * 8 / 8);
+    }
+
+    #[test]
+    fn gui_kernel_exposes_host_event_queue() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Kernel.st")).unwrap();
+        vm.enqueue_host_event(HostEvent::MouseMove { x: 12, y: 34 });
+        let method = crate::compile_doit(
+            &mut vm,
+            "Event := Behavior hostNextEvent. X := Event at: 2. Y := Event at: 3. X + Y",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(46));
+    }
+
+    #[test]
+    fn gui_kernel_can_fill_monochrome_forms() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Kernel.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "F := Form new initializeWidth: 8 height: 2 depth: 1. F fillRectangleX: 0 y: 0 width: 8 height: 1 with: 1. F bits at: 1",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(255));
+    }
+
+    #[test]
+    fn gui_kernel_can_copy_monochrome_form_rectangles() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Kernel.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "S := Form new initializeWidth: 8 height: 2 depth: 1. D := Form new initializeWidth: 8 height: 2 depth: 1. S fillRectangleX: 0 y: 0 width: 8 height: 1 with: 1. D copyRectangleX: 0 y: 1 width: 8 height: 1 from: S atX: 0 y: 0. D bits at: 2",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(255));
+    }
+
+    #[test]
+    fn gui_world_can_render_a_solid_view() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "W := World new initializeWidth: 8 height: 8 depth: 1. V := SolidView new initialize. O := Point new setX: 0 y: 0. C := Point new setX: 8 y: 8. R := Rectangle new setOrigin: O corner: C. V bounds: R. W addSubview: V. W render. W hostDisplay handle",
+        )
+        .unwrap();
+        let handle = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        let snapshot = vm.host_display_snapshot(handle.as_i64().unwrap() as u32).unwrap();
+        assert_eq!(snapshot.presents, 1);
+        assert!(snapshot.last_frame.iter().all(|byte| *byte == 255));
+    }
+
+    #[test]
+    fn gui_world_can_render_a_system_window_frame() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let method = crate::compile_doit(
+            &mut vm,
+            "W := World new initializeWidth: 8 height: 8 depth: 1. V := SystemWindow new initialize. O := Point new setX: 1 y: 1. C := Point new setX: 7 y: 7. R := Rectangle new setOrigin: O corner: C. V bounds: R. W addSubview: V. W render. W displayForm bits at: 2",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(126));
+    }
+
+    #[test]
+    fn gui_input_sensor_decodes_mouse_events() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        vm.enqueue_host_event(HostEvent::MouseDown {
+            x: 4,
+            y: 5,
+            button: 1,
+        });
+        let method = crate::compile_doit(
+            &mut vm,
+            "W := World new initializeWidth: 8 height: 8 depth: 1. E := W nextEvent. (E x + E y) + E button",
+        )
+        .unwrap();
+        let result = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        assert_eq!(result.as_i64(), Some(10));
+    }
+
+    #[test]
+    fn gui_host_display_can_save_png_snapshot() {
+        let mut vm = Vm::new();
+        load_source(&mut vm, include_str!("../smalltalk/gui/Bootstrap.st")).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "smallesttalk-gui-test-{}.png",
+            std::process::id()
+        ));
+        let source = format!(
+            "W := World new initializeWidth: 8 height: 8 depth: 1. V := SolidView new initialize. O := Point new setX: 0 y: 0. C := Point new setX: 8 y: 8. R := Rectangle new setOrigin: O corner: C. V bounds: R. W addSubview: V. W render. W hostDisplay savePNG: '{}'",
+            path.display()
+        );
+        let method = crate::compile_doit(&mut vm, &source).unwrap();
+        let _ = vm.run_method(method, Oop::nil(), &[]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -107,10 +107,22 @@ impl ClassTable {
     }
 
     pub fn instance_variable_index(&self, class_index: u32, name: &str) -> Option<usize> {
-        self.get(class_index)?
+        let info = self.get(class_index)?;
+        let inherited = match info.superclass {
+            Some(CLASS_INDEX_BEHAVIOR) | None => 0,
+            Some(superclass) => self.get(superclass)?.fixed_fields,
+        };
+        if let Some(local_index) = info
             .instance_variables
             .iter()
             .position(|ivar| ivar == name)
+        {
+            return Some(inherited + local_index);
+        }
+        match info.superclass {
+            Some(CLASS_INDEX_BEHAVIOR) | None => None,
+            Some(superclass) => self.instance_variable_index(superclass, name),
+        }
     }
 
     pub fn set_method(&mut self, index: u32, selector: Oop, method: Oop) {

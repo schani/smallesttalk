@@ -1,7 +1,12 @@
-use std::{collections::HashMap, error::Error, fmt};
+use std::{
+    collections::{HashMap, VecDeque},
+    error::Error,
+    fmt,
+    time::{Duration, Instant},
+};
 
 use crate::{
-    bootstrap, corelib,
+    bootstrap, corelib, gui_snapshot,
     bytecode::{
         BLOCK_RETURN, DUP, EXTENDED_SEND, EXTENDED_SUPER_SEND, JUMP_BACK, JUMP_BACK_LONG,
         JUMP_FALSE, JUMP_FALSE_LONG, JUMP_FORWARD, JUMP_FORWARD_LONG, JUMP_TRUE, JUMP_TRUE_LONG,
@@ -25,10 +30,15 @@ use crate::{
     primitives::{
         PRIMITIVE_AT, PRIMITIVE_AT_PUT, PRIMITIVE_BASIC_NEW, PRIMITIVE_BASIC_NEW_SIZED,
         PRIMITIVE_CLASS, PRIMITIVE_COMPILED_METHOD, PRIMITIVE_COPY_FROM_TO, PRIMITIVE_EQUALS,
-        PRIMITIVE_GLOBAL_ASSOCIATION, PRIMITIVE_INSTALL_COMPILED_METHOD,
-        PRIMITIVE_INSTALL_METHOD, PRIMITIVE_INSTANCE_VARIABLE_INDEX, PRIMITIVE_INTERN_SYMBOL,
-        PRIMITIVE_SIZE, PRIMITIVE_SUBCLASS, PRIMITIVE_SUBCLASS_EXTENDED,
-        PRIMITIVE_THIS_CONTEXT,
+        PRIMITIVE_GLOBAL_ASSOCIATION, PRIMITIVE_HOST_DISPLAY_OPEN,
+        PRIMITIVE_HOST_DISPLAY_PRESENT_FORM, PRIMITIVE_HOST_DISPLAY_SAVE_PNG,
+        PRIMITIVE_HOST_NEXT_EVENT,
+        PRIMITIVE_INSTALL_COMPILED_METHOD, PRIMITIVE_INSTALL_METHOD,
+        PRIMITIVE_FORM_COPY_RECTANGLE, PRIMITIVE_FORM_FILL_RECTANGLE,
+        PRIMITIVE_INSTANCE_VARIABLE_INDEX,
+        PRIMITIVE_INTERN_SYMBOL, PRIMITIVE_MILLISECOND_CLOCK, PRIMITIVE_SIZE,
+        PRIMITIVE_SLEEP_MILLISECONDS, PRIMITIVE_SUBCLASS,
+        PRIMITIVE_SUBCLASS_EXTENDED, PRIMITIVE_THIS_CONTEXT,
     },
     value::Oop,
 };
@@ -160,6 +170,35 @@ enum ExecOutcome {
     NonLocalReturn { home_frame_id: usize, result: Oop },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostEvent {
+    MouseMove { x: i64, y: i64 },
+    MouseDown { x: i64, y: i64, button: i64 },
+    MouseUp { x: i64, y: i64, button: i64 },
+    KeyDown { key: i64 },
+    KeyUp { key: i64 },
+    Resize { width: i64, height: i64 },
+    Quit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostDisplaySnapshot {
+    pub width: usize,
+    pub height: usize,
+    pub depth: usize,
+    pub presents: usize,
+    pub last_frame: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct HostDisplayState {
+    width: usize,
+    height: usize,
+    depth: usize,
+    presents: usize,
+    last_frame: Vec<u8>,
+}
+
 pub struct Vm {
     pub heap: Heap,
     pub stack: VmStack,
@@ -173,6 +212,10 @@ pub struct Vm {
     closure_homes: HashMap<Oop, ClosureHome>,
     active_frame_ids: Vec<usize>,
     next_frame_id: usize,
+    host_displays: HashMap<u32, HostDisplayState>,
+    next_host_display_id: u32,
+    host_events: VecDeque<HostEvent>,
+    clock_start: Instant,
 }
 
 impl Default for Vm {
@@ -204,10 +247,16 @@ impl Vm {
             closure_homes: HashMap::new(),
             active_frame_ids: Vec::new(),
             next_frame_id: 1,
+            host_displays: HashMap::new(),
+            next_host_display_id: 1,
+            host_events: VecDeque::new(),
+            clock_start: Instant::now(),
         };
         vm.rebuild_runtime_metadata();
         vm.sync_heap_metadata();
         crate::load_source(&mut vm, corelib::SOURCE).expect("core library source must load");
+        vm.install_gui_runtime_methods_if_available()
+            .expect("gui runtime methods must install");
         vm
     }
 
@@ -221,6 +270,70 @@ impl Vm {
             state.symbols,
             state.globals,
         )
+    }
+
+    fn class_index_by_name(&self, name: &str) -> Option<u32> {
+        self.class_table
+            .iter()
+            .find_map(|(index, info)| (info.name == name).then_some(index))
+    }
+
+    pub(crate) fn install_gui_runtime_methods_if_available(&mut self) -> Result<(), VmError> {
+        let behavior = crate::class_table::CLASS_INDEX_BEHAVIOR;
+        self.install_primitive_method(behavior, "hostDisplayOpenWidth:height:depth:", 3, PRIMITIVE_HOST_DISPLAY_OPEN)?;
+        self.install_primitive_method(behavior, "hostNextEvent", 0, PRIMITIVE_HOST_NEXT_EVENT)?;
+        self.install_primitive_method(behavior, "millisecondClock", 0, PRIMITIVE_MILLISECOND_CLOCK)?;
+        self.install_primitive_method(behavior, "sleepMilliseconds:", 1, PRIMITIVE_SLEEP_MILLISECONDS)?;
+        if let Some(host_display) = self.class_index_by_name("HostDisplay") {
+            self.install_primitive_method(host_display, "presentForm:", 1, PRIMITIVE_HOST_DISPLAY_PRESENT_FORM)?;
+            self.install_primitive_method(host_display, "savePNG:", 1, PRIMITIVE_HOST_DISPLAY_SAVE_PNG)?;
+        }
+        if let Some(form) = self.class_index_by_name("Form") {
+            self.install_primitive_method(form, "fillRectangleX:y:width:height:with:", 5, PRIMITIVE_FORM_FILL_RECTANGLE)?;
+            self.install_primitive_method(
+                form,
+                "copyRectangleX:y:width:height:from:atX:y:",
+                7,
+                PRIMITIVE_FORM_COPY_RECTANGLE,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn install_primitive_method(
+        &mut self,
+        class_index: u32,
+        selector_text: &str,
+        num_args: u8,
+        primitive_index: u16,
+    ) -> Result<(), VmError> {
+        let selector = self.intern_symbol(selector_text);
+        let method = self.compiled_method(
+            MethodHeaderFields {
+                num_args,
+                num_temps: 0,
+                num_literals: 0,
+                flags: primitive_index as u32,
+            },
+            &[],
+            &[RETURN_TOP],
+        );
+        self.add_method(class_index, selector, method)
+    }
+
+    pub fn enqueue_host_event(&mut self, event: HostEvent) {
+        self.host_events.push_back(event);
+    }
+
+    pub fn host_display_snapshot(&self, handle: u32) -> Option<HostDisplaySnapshot> {
+        let state = self.host_displays.get(&handle)?;
+        Some(HostDisplaySnapshot {
+            width: state.width,
+            height: state.height,
+            depth: state.depth,
+            presents: state.presents,
+            last_frame: state.last_frame.clone(),
+        })
     }
 
     pub fn special_object(&self, index: usize) -> Option<Oop> {
@@ -307,11 +420,22 @@ impl Vm {
         format: Format,
         fixed_fields: usize,
     ) -> Result<u32, VmError> {
-        if let Some(superclass_index) = superclass {
+        let inherited_fixed_fields = if let Some(superclass_index) = superclass {
             if self.class_table.get(superclass_index).is_none() {
                 return Err(VmError::InvalidClassIndex(superclass_index));
             }
-        }
+            if superclass_index == CLASS_INDEX_BEHAVIOR {
+                0
+            } else {
+                self.class_table
+                    .get(superclass_index)
+                    .ok_or(VmError::InvalidClassIndex(superclass_index))?
+                    .fixed_fields
+            }
+        } else {
+            0
+        };
+        let total_fixed_fields = inherited_fixed_fields + fixed_fields;
         let class_oop = self.heap.allocate_object_in(
             CLASS_INDEX_BEHAVIOR,
             Format::FixedPointers,
@@ -323,7 +447,7 @@ impl Vm {
             name: name.to_string(),
             superclass,
             instance_format: format,
-            fixed_fields,
+            fixed_fields: total_fixed_fields,
             instance_variables: Vec::new(),
             methods: HashMap::new(),
         });
@@ -351,7 +475,7 @@ impl Vm {
         self.heap.write_slot(
             class_oop,
             2,
-            crate::class_table::encode_format_descriptor(format, fixed_fields),
+            crate::class_table::encode_format_descriptor(format, total_fixed_fields),
         );
         self.heap.write_slot(class_oop, 3, empty_array);
         self.heap.write_slot(class_oop, 4, name_symbol);
@@ -897,6 +1021,38 @@ impl Vm {
                 let result = self.primitive_install_compiled_method(receiver, args)?;
                 Ok(ExecOutcome::Returned(result))
             }
+            PRIMITIVE_HOST_DISPLAY_OPEN => {
+                let result = self.primitive_host_display_open(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_HOST_DISPLAY_PRESENT_FORM => {
+                let result = self.primitive_host_display_present_form(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_HOST_DISPLAY_SAVE_PNG => {
+                let result = self.primitive_host_display_save_png(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_HOST_NEXT_EVENT => {
+                let result = self.primitive_host_next_event(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_MILLISECOND_CLOCK => {
+                let result = self.primitive_millisecond_clock(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_SLEEP_MILLISECONDS => {
+                let result = self.primitive_sleep_milliseconds(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_FORM_FILL_RECTANGLE => {
+                let result = self.primitive_form_fill_rectangle(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
+            PRIMITIVE_FORM_COPY_RECTANGLE => {
+                let result = self.primitive_form_copy_rectangle(receiver, args)?;
+                Ok(ExecOutcome::Returned(result))
+            }
             PRIMITIVE_GLOBAL_ASSOCIATION => {
                 let result = self.primitive_global_association(receiver, args)?;
                 Ok(ExecOutcome::Returned(result))
@@ -1176,6 +1332,401 @@ impl Vm {
         Ok(method)
     }
 
+    fn primitive_host_display_open(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 3 {
+            return Err(VmError::WrongArgumentCount { expected: 3, actual: args.len() });
+        }
+        let width = args[0]
+            .as_i64()
+            .ok_or(VmError::TypeError("width must be SmallInteger"))? as usize;
+        let height = args[1]
+            .as_i64()
+            .ok_or(VmError::TypeError("height must be SmallInteger"))? as usize;
+        let depth = args[2]
+            .as_i64()
+            .ok_or(VmError::TypeError("depth must be SmallInteger"))? as usize;
+        let class_index = self
+            .class_index_by_name("HostDisplay")
+            .ok_or(VmError::TypeError("HostDisplay class not loaded"))?;
+        let object = self.new_instance(class_index, 0)?;
+        let handle = self.next_host_display_id;
+        self.next_host_display_id += 1;
+        self.host_displays.insert(
+            handle,
+            HostDisplayState {
+                width,
+                height,
+                depth,
+                presents: 0,
+                last_frame: Vec::new(),
+            },
+        );
+        self.heap.write_slot(object, 0, Oop::from_i64(handle as i64).unwrap());
+        self.heap.write_slot(object, 1, Oop::from_i64(width as i64).unwrap());
+        self.heap.write_slot(object, 2, Oop::from_i64(height as i64).unwrap());
+        self.heap.write_slot(object, 3, Oop::from_i64(depth as i64).unwrap());
+        Ok(object)
+    }
+
+    fn primitive_host_display_present_form(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 1 {
+            return Err(VmError::WrongArgumentCount { expected: 1, actual: args.len() });
+        }
+        let handle = self
+            .heap
+            .read_slot(receiver, 0)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("HostDisplay handle missing"))? as u32;
+        let form = args[0];
+        let form_class = self.class_of(form)?;
+        let form_info = self
+            .class_table
+            .get(form_class)
+            .ok_or(VmError::InvalidClassIndex(form_class))?;
+        if form_info.name != "Form" {
+            return Err(VmError::TypeError("presentForm: expects a Form"));
+        }
+        let width = self
+            .heap
+            .read_slot(form, 0)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("Form width missing"))? as usize;
+        let height = self
+            .heap
+            .read_slot(form, 1)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("Form height missing"))? as usize;
+        let depth = self
+            .heap
+            .read_slot(form, 2)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("Form depth missing"))? as usize;
+        let bits = self
+            .heap
+            .read_slot(form, 3)
+            .ok_or(VmError::TypeError("Form bits missing"))?;
+        let bytes = self
+            .heap
+            .bytes(bits)
+            .ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+        let expected = match depth {
+            1 => (width * height).div_ceil(8),
+            8 => width * height,
+            _ => bytes.len(),
+        };
+        if bytes.len() < expected {
+            return Err(VmError::IndexOutOfBounds { index: bytes.len(), size: expected });
+        }
+        let state = self
+            .host_displays
+            .get_mut(&handle)
+            .ok_or(VmError::TypeError("unknown HostDisplay handle"))?;
+        state.width = width;
+        state.height = height;
+        state.depth = depth;
+        state.last_frame = bytes;
+        state.presents += 1;
+        Ok(receiver)
+    }
+
+    fn primitive_host_display_save_png(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 1 {
+            return Err(VmError::WrongArgumentCount { expected: 1, actual: args.len() });
+        }
+        let handle = self
+            .heap
+            .read_slot(receiver, 0)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("HostDisplay handle missing"))? as u32;
+        let path = self.symbol_text(args[0])?;
+        let state = self
+            .host_displays
+            .get(&handle)
+            .ok_or(VmError::TypeError("unknown HostDisplay handle"))?;
+        gui_snapshot::write_display_png(
+            &path,
+            state.width,
+            state.height,
+            state.depth,
+            &state.last_frame,
+        )
+        .map_err(|_| VmError::PrimitiveFailed(PRIMITIVE_HOST_DISPLAY_SAVE_PNG))?;
+        Ok(receiver)
+    }
+
+    fn host_event_to_oop(&mut self, event: HostEvent) -> Oop {
+        let values: Vec<Oop> = match event {
+            HostEvent::MouseMove { x, y } => vec![self.intern_symbol("mouseMove"), Oop::from_i64(x).unwrap(), Oop::from_i64(y).unwrap()],
+            HostEvent::MouseDown { x, y, button } => vec![
+                self.intern_symbol("mouseDown"),
+                Oop::from_i64(x).unwrap(),
+                Oop::from_i64(y).unwrap(),
+                Oop::from_i64(button).unwrap(),
+            ],
+            HostEvent::MouseUp { x, y, button } => vec![
+                self.intern_symbol("mouseUp"),
+                Oop::from_i64(x).unwrap(),
+                Oop::from_i64(y).unwrap(),
+                Oop::from_i64(button).unwrap(),
+            ],
+            HostEvent::KeyDown { key } => vec![self.intern_symbol("keyDown"), Oop::from_i64(key).unwrap()],
+            HostEvent::KeyUp { key } => vec![self.intern_symbol("keyUp"), Oop::from_i64(key).unwrap()],
+            HostEvent::Resize { width, height } => vec![
+                self.intern_symbol("resize"),
+                Oop::from_i64(width).unwrap(),
+                Oop::from_i64(height).unwrap(),
+            ],
+            HostEvent::Quit => vec![self.intern_symbol("quit")],
+        };
+        self.make_array(&values)
+    }
+
+    fn primitive_host_next_event(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if !args.is_empty() {
+            return Err(VmError::WrongArgumentCount { expected: 0, actual: args.len() });
+        }
+        Ok(self
+            .host_events
+            .pop_front()
+            .map(|event| self.host_event_to_oop(event))
+            .unwrap_or_else(Oop::nil))
+    }
+
+    fn primitive_millisecond_clock(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if !args.is_empty() {
+            return Err(VmError::WrongArgumentCount { expected: 0, actual: args.len() });
+        }
+        let millis = self.clock_start.elapsed().as_millis() as i64;
+        Oop::from_i64(millis).ok_or(VmError::TypeError("millisecond clock overflow"))
+    }
+
+    fn primitive_sleep_milliseconds(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 1 {
+            return Err(VmError::WrongArgumentCount { expected: 1, actual: args.len() });
+        }
+        let millis = args[0]
+            .as_i64()
+            .ok_or(VmError::TypeError("sleepMilliseconds: expects SmallInteger"))?;
+        if millis > 0 {
+            std::thread::sleep(Duration::from_millis(millis as u64));
+        }
+        Ok(Oop::nil())
+    }
+
+    fn primitive_form_fill_rectangle(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 5 {
+            return Err(VmError::WrongArgumentCount { expected: 5, actual: args.len() });
+        }
+        let x = args[0]
+            .as_i64()
+            .ok_or(VmError::TypeError("x must be SmallInteger"))?
+            .max(0) as usize;
+        let y = args[1]
+            .as_i64()
+            .ok_or(VmError::TypeError("y must be SmallInteger"))?
+            .max(0) as usize;
+        let width = args[2]
+            .as_i64()
+            .ok_or(VmError::TypeError("width must be SmallInteger"))?
+            .max(0) as usize;
+        let height = args[3]
+            .as_i64()
+            .ok_or(VmError::TypeError("height must be SmallInteger"))?
+            .max(0) as usize;
+        let value = args[4]
+            .as_i64()
+            .ok_or(VmError::TypeError("fill value must be SmallInteger"))?;
+        let form_class = self.class_of(receiver)?;
+        let form_info = self
+            .class_table
+            .get(form_class)
+            .ok_or(VmError::InvalidClassIndex(form_class))?;
+        if form_info.name != "Form" {
+            return Err(VmError::TypeError("fillRectangle... expects a Form receiver"));
+        }
+        let form_width = self
+            .heap
+            .read_slot(receiver, 0)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("Form width missing"))? as usize;
+        let form_height = self
+            .heap
+            .read_slot(receiver, 1)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("Form height missing"))? as usize;
+        let depth = self
+            .heap
+            .read_slot(receiver, 2)
+            .and_then(Oop::as_i64)
+            .ok_or(VmError::TypeError("Form depth missing"))? as usize;
+        let bits = self
+            .heap
+            .read_slot(receiver, 3)
+            .ok_or(VmError::TypeError("Form bits missing"))?;
+        match depth {
+            1 => {
+                let mut bytes = self
+                    .heap
+                    .bytes(bits)
+                    .ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+                let max_y = y.saturating_add(height).min(form_height);
+                let max_x = x.saturating_add(width).min(form_width);
+                for py in y..max_y {
+                    for px in x..max_x {
+                        let pixel_index = py * form_width + px;
+                        let byte_index = pixel_index / 8;
+                        let bit_index = 7 - (pixel_index % 8);
+                        let mask = 1u8 << bit_index;
+                        if value == 0 {
+                            bytes[byte_index] &= !mask;
+                        } else {
+                            bytes[byte_index] |= mask;
+                        }
+                    }
+                }
+                for (index, byte) in bytes.into_iter().enumerate() {
+                    let _ = self.heap.write_byte(bits, index, byte);
+                }
+            }
+            8 => {
+                let mut bytes = self
+                    .heap
+                    .bytes(bits)
+                    .ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+                let fill = value.clamp(0, 255) as u8;
+                let max_y = y.saturating_add(height).min(form_height);
+                let max_x = x.saturating_add(width).min(form_width);
+                for py in y..max_y {
+                    let row_start = py * form_width;
+                    for px in x..max_x {
+                        bytes[row_start + px] = fill;
+                    }
+                }
+                for (index, byte) in bytes.into_iter().enumerate() {
+                    let _ = self.heap.write_byte(bits, index, byte);
+                }
+            }
+            _ => return Err(VmError::TypeError("fillRectangle... only supports depth 1 and 8 forms")),
+        }
+        Ok(receiver)
+    }
+
+    fn primitive_form_copy_rectangle(&mut self, receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
+        if args.len() != 7 {
+            return Err(VmError::WrongArgumentCount { expected: 7, actual: args.len() });
+        }
+        let dest_x = args[0]
+            .as_i64()
+            .ok_or(VmError::TypeError("dest x must be SmallInteger"))?
+            .max(0) as usize;
+        let dest_y = args[1]
+            .as_i64()
+            .ok_or(VmError::TypeError("dest y must be SmallInteger"))?
+            .max(0) as usize;
+        let width = args[2]
+            .as_i64()
+            .ok_or(VmError::TypeError("width must be SmallInteger"))?
+            .max(0) as usize;
+        let height = args[3]
+            .as_i64()
+            .ok_or(VmError::TypeError("height must be SmallInteger"))?
+            .max(0) as usize;
+        let source_form = args[4];
+        let source_x = args[5]
+            .as_i64()
+            .ok_or(VmError::TypeError("source x must be SmallInteger"))?
+            .max(0) as usize;
+        let source_y = args[6]
+            .as_i64()
+            .ok_or(VmError::TypeError("source y must be SmallInteger"))?
+            .max(0) as usize;
+
+        let dest_class = self.class_of(receiver)?;
+        let dest_info = self
+            .class_table
+            .get(dest_class)
+            .ok_or(VmError::InvalidClassIndex(dest_class))?;
+        if dest_info.name != "Form" {
+            return Err(VmError::TypeError("copyRectangle... expects a Form receiver"));
+        }
+        let source_class = self.class_of(source_form)?;
+        let source_info = self
+            .class_table
+            .get(source_class)
+            .ok_or(VmError::InvalidClassIndex(source_class))?;
+        if source_info.name != "Form" {
+            return Err(VmError::TypeError("copyRectangle... expects a Form source"));
+        }
+
+        let dest_width = self.heap.read_slot(receiver, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form width missing"))? as usize;
+        let dest_height = self.heap.read_slot(receiver, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form height missing"))? as usize;
+        let dest_depth = self.heap.read_slot(receiver, 2).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form depth missing"))? as usize;
+        let dest_bits = self.heap.read_slot(receiver, 3).ok_or(VmError::TypeError("Form bits missing"))?;
+
+        let source_width = self.heap.read_slot(source_form, 0).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form width missing"))? as usize;
+        let source_height = self.heap.read_slot(source_form, 1).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form height missing"))? as usize;
+        let source_depth = self.heap.read_slot(source_form, 2).and_then(Oop::as_i64).ok_or(VmError::TypeError("Form depth missing"))? as usize;
+        let source_bits = self.heap.read_slot(source_form, 3).ok_or(VmError::TypeError("Form bits missing"))?;
+
+        if dest_depth != source_depth {
+            return Err(VmError::TypeError("copyRectangle... requires matching form depths"));
+        }
+
+        match dest_depth {
+            1 => {
+                let source_bytes = self.heap.bytes(source_bits).ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+                let mut dest_bytes = self.heap.bytes(dest_bits).ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+                let max_y = height
+                    .min(dest_height.saturating_sub(dest_y))
+                    .min(source_height.saturating_sub(source_y));
+                let max_x = width
+                    .min(dest_width.saturating_sub(dest_x))
+                    .min(source_width.saturating_sub(source_x));
+                for row in 0..max_y {
+                    for col in 0..max_x {
+                        let src_pixel = (source_y + row) * source_width + (source_x + col);
+                        let src_byte = source_bytes[src_pixel / 8];
+                        let src_mask = 1u8 << (7 - (src_pixel % 8));
+                        let bit_on = (src_byte & src_mask) != 0;
+                        let dst_pixel = (dest_y + row) * dest_width + (dest_x + col);
+                        let dst_byte_index = dst_pixel / 8;
+                        let dst_mask = 1u8 << (7 - (dst_pixel % 8));
+                        if bit_on {
+                            dest_bytes[dst_byte_index] |= dst_mask;
+                        } else {
+                            dest_bytes[dst_byte_index] &= !dst_mask;
+                        }
+                    }
+                }
+                for (index, byte) in dest_bytes.into_iter().enumerate() {
+                    let _ = self.heap.write_byte(dest_bits, index, byte);
+                }
+            }
+            8 => {
+                let source_bytes = self.heap.bytes(source_bits).ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+                let mut dest_bytes = self.heap.bytes(dest_bits).ok_or(VmError::TypeError("Form bits must be a ByteArray"))?;
+                let max_y = height
+                    .min(dest_height.saturating_sub(dest_y))
+                    .min(source_height.saturating_sub(source_y));
+                let max_x = width
+                    .min(dest_width.saturating_sub(dest_x))
+                    .min(source_width.saturating_sub(source_x));
+                for row in 0..max_y {
+                    for col in 0..max_x {
+                        let src_index = (source_y + row) * source_width + (source_x + col);
+                        let dst_index = (dest_y + row) * dest_width + (dest_x + col);
+                        dest_bytes[dst_index] = source_bytes[src_index];
+                    }
+                }
+                for (index, byte) in dest_bytes.into_iter().enumerate() {
+                    let _ = self.heap.write_byte(dest_bits, index, byte);
+                }
+            }
+            _ => return Err(VmError::TypeError("copyRectangle... only supports depth 1 and 8 forms")),
+        }
+        Ok(receiver)
+    }
+
     fn primitive_global_association(&mut self, _receiver: Oop, args: &[Oop]) -> Result<Oop, VmError> {
         if args.len() != 1 {
             return Err(VmError::WrongArgumentCount { expected: 1, actual: args.len() });
@@ -1295,6 +1846,15 @@ impl Vm {
             .split_whitespace()
             .map(str::to_string)
             .collect::<Vec<_>>();
+        let inherited_fixed_fields = if superclass_index == CLASS_INDEX_BEHAVIOR {
+            0
+        } else {
+            self.class_table
+                .get(superclass_index)
+                .ok_or(VmError::InvalidClassIndex(superclass_index))?
+                .fixed_fields
+        };
+        let expected_fixed_fields = inherited_fixed_fields + ivars.len();
         let class_index = if let Some(existing) = self
             .class_table
             .iter()
@@ -1305,7 +1865,7 @@ impl Vm {
                 .get(existing)
                 .ok_or(VmError::InvalidClassIndex(existing))?;
             if info.superclass != Some(superclass_index)
-                || info.fixed_fields != ivars.len()
+                || info.fixed_fields != expected_fixed_fields
                 || info.instance_format != Format::FixedPointers
             {
                 return Err(VmError::TypeError("existing class shape mismatch"));

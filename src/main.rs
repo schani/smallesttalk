@@ -292,12 +292,54 @@ fn repl(mut vm: Vm, mut image_path: PathBuf) -> io::Result<()> {
     Ok(())
 }
 
+fn run_source_file(path: &Path) -> Result<(), String> {
+    let path = path.to_path_buf();
+    std::thread::Builder::new()
+        .name("render-source".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let mut vm = Vm::new();
+            let source = fs::read_to_string(&path)
+                .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+            let summary = load_source(&mut vm, &source)
+                .map_err(|err| format!("failed to load {}: {err}", path.display()))?;
+            println!(
+                "loaded source: classes={}, methods={}, doits={}",
+                summary.classes, summary.methods, summary.doits
+            );
+            Ok::<(), String>(())
+        })
+        .map_err(|err| format!("failed to spawn render thread: {err}"))?
+        .join()
+        .map_err(|_| "render thread panicked".to_string())?
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
-    let image_path = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(default_image_path);
+    if let Some(first) = args.next() {
+        if first == "render" {
+            let Some(path) = args.next() else {
+                eprintln!("usage: cargo run -- render FILE");
+                std::process::exit(2);
+            };
+            if let Err(err) = run_source_file(Path::new(&path)) {
+                eprintln!("render failed: {err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+
+        let image_path = PathBuf::from(first);
+        let vm = load_or_boot(&image_path);
+        print_stats(&vm);
+
+        if let Err(err) = repl(vm, image_path) {
+            eprintln!("repl error: {err}");
+        }
+        return;
+    }
+
+    let image_path = default_image_path();
     let vm = load_or_boot(&image_path);
     print_stats(&vm);
 

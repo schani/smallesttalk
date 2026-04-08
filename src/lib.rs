@@ -3,6 +3,8 @@ pub mod bytecode;
 pub mod class_table;
 pub mod compiler;
 pub mod corelib;
+pub mod guilib;
+pub mod gui_snapshot;
 pub mod heap;
 pub mod image;
 pub mod interpreter;
