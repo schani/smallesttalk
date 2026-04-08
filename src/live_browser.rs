@@ -258,7 +258,7 @@ impl LiveBrowser {
         let mut source_lines = self
             .source_lines(vm)
             .into_iter()
-            .map(|line| truncate_text(&line, 64))
+            .map(|line| truncate_text(&line, 24))
             .collect::<Vec<_>>();
         source_lines.truncate(layout.source_visible_rows().max(1));
         let title = match (self.current_class_name(vm), self.current_method_names(vm).get(self.selected_method)) {
@@ -305,6 +305,19 @@ impl LiveBrowser {
         names
     }
 
+    fn selected_method_source(&self, vm: &Vm) -> Option<String> {
+        let class_index = self.classes.get(self.selected_class).copied()?;
+        let info = vm.class_table.get(class_index)?;
+        let selector_name = self.current_method_names(vm).get(self.selected_method)?.clone();
+        let selector = info
+            .methods
+            .keys()
+            .copied()
+            .find(|selector| vm.symbol_text(*selector).ok().as_deref() == Some(selector_name.as_str()))?;
+        let method = info.methods.get(&selector).copied()?;
+        vm.method_source(method).map(ToString::to_string)
+    }
+
     fn source_lines(&self, vm: &Vm) -> Vec<String> {
         let Some(class_index) = self.classes.get(self.selected_class).copied() else {
             return vec!["NO CLASS".to_string()];
@@ -327,19 +340,26 @@ impl LiveBrowser {
             .get(self.selected_method)
             .cloned()
             .unwrap_or_else(|| "NONE".to_string());
-        vec![
+        let mut lines = vec![
             format!("CLASS {}", info.name),
             format!("SUPER {}", superclass),
             format!("IVARS {}", ivars),
             format!("METHODS {}", method_names.len()),
             String::new(),
             format!("METHOD {}", selected_method),
-            "SOURCE UNAVAILABLE".to_string(),
+        ];
+        if let Some(source) = self.selected_method_source(vm) {
+            lines.extend(source.lines().map(|line| line.to_string()));
+        } else {
+            lines.push("SOURCE UNAVAILABLE".to_string());
+        }
+        lines.extend([
             "ARROWS NAVIGATE".to_string(),
             "TAB SWITCH PANE".to_string(),
             "CLICK TO SELECT".to_string(),
             "ESC QUIT".to_string(),
-        ]
+        ]);
+        lines
     }
 }
 
@@ -435,5 +455,6 @@ mod tests {
         let data = browser.view_data(&vm, &BrowserLayout::default());
         assert!(!data.method_lines.is_empty());
         assert!(data.title.contains("BrowserWindow"));
+        assert!(data.source_lines.iter().any(|line| line.contains("classList")));
     }
 }

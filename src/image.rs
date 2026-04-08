@@ -15,7 +15,7 @@ use crate::{
 };
 
 const MAGIC: &[u8; 8] = b"SMTLIMG\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const NONE_U64: u64 = u64::MAX;
 
 #[derive(Debug)]
@@ -248,6 +248,12 @@ pub fn save_vm<P: AsRef<Path>>(vm: &Vm, path: P) -> Result<(), ImageError> {
         write_u64(&mut file, encode_oop(*oop, &offset_by_raw)?)?;
     }
 
+    write_u64(&mut file, vm.method_sources.len() as u64)?;
+    for (method, source) in &vm.method_sources {
+        write_u64(&mut file, encode_oop(*method, &offset_by_raw)?)?;
+        write_string(&mut file, source)?;
+    }
+
     Ok(())
 }
 
@@ -403,6 +409,14 @@ pub fn load_vm<P: AsRef<Path>>(path: P) -> Result<Vm, ImageError> {
         globals.insert(name, oop);
     }
 
+    let method_source_count = read_u64(&mut file)? as usize;
+    let mut method_sources = HashMap::with_capacity(method_source_count);
+    for _ in 0..method_source_count {
+        let method = decode_oop(read_u64(&mut file)?, &offset_to_oop)?;
+        let source = read_string(&mut file)?;
+        method_sources.insert(method, source);
+    }
+
     Ok(Vm::from_parts(
         heap,
         class_table,
@@ -410,6 +424,7 @@ pub fn load_vm<P: AsRef<Path>>(path: P) -> Result<Vm, ImageError> {
         special_selectors,
         symbols,
         globals,
+        method_sources,
     ))
 }
 
@@ -479,6 +494,10 @@ mod tests {
         let selector = loaded.intern_symbol("answer");
         let result = loaded.send(loaded.true_oop(), selector, &[]).unwrap();
         assert_eq!(result.as_i64(), Some(42));
+        let (_, method) = loaded
+            .lookup_method(crate::class_table::CLASS_INDEX_TRUE, selector)
+            .unwrap();
+        assert_eq!(loaded.method_source(method), Some("answer ^ Answer"));
         let _ = std::fs::remove_file(path);
     }
 

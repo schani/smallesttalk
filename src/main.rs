@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
-
+    time::Duration,
 };
 
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
@@ -436,6 +436,25 @@ fn render_live_browser_snapshot(output_path: &Path, paths: &[String]) -> Result<
     Ok(())
 }
 
+fn render_browser_frame(
+    vm: &mut Vm,
+    world: Oop,
+    browser_window: Oop,
+    handle: u32,
+    browser: &LiveBrowser,
+    layout: &BrowserLayout,
+    render_selector: Oop,
+) -> Result<(Vec<u32>, usize, usize, String), String> {
+    let view = browser.view_data(vm, layout);
+    apply_browser_view(vm, browser_window, &view).map_err(|err| err.to_string())?;
+    vm.send(world, render_selector, &[]).map_err(|err| err.to_string())?;
+    let snapshot = vm
+        .host_display_snapshot(handle)
+        .ok_or("no host display snapshot available")?;
+    let buffer = snapshot_to_argb(&snapshot);
+    Ok((buffer, snapshot.width, snapshot.height, view.title))
+}
+
 fn run_live_browser(paths: &[String]) -> Result<(), String> {
     let mut vm = Vm::new();
     let layout = BrowserLayout::default();
@@ -452,9 +471,18 @@ fn run_live_browser(paths: &[String]) -> Result<(), String> {
     )
     .map_err(|err| format!("failed to open window: {err}"))?;
     let render_selector = vm.intern_symbol("render");
+    let (mut buffer, width, height, mut title) = render_browser_frame(
+        &mut vm,
+        world,
+        browser_window,
+        handle,
+        &browser,
+        &layout,
+        render_selector,
+    )?;
     let mut last_mouse_down = false;
-    let mut dirty = true;
     while window.is_open() {
+        let mut dirty = false;
         for key in window.get_keys_pressed(KeyRepeat::Yes) {
             match key {
                 Key::Escape | Key::Q => return Ok(()),
@@ -504,21 +532,24 @@ fn run_live_browser(paths: &[String]) -> Result<(), String> {
 
         if dirty {
             browser.refresh(&vm);
-            let view = browser.view_data(&vm, &layout);
-            apply_browser_view(&mut vm, browser_window, &view).map_err(|err| err.to_string())?;
-            vm.send(world, render_selector, &[]).map_err(|err| err.to_string())?;
-            let snapshot = vm
-                .host_display_snapshot(handle)
-                .ok_or("no host display snapshot available")?;
-            let buffer = snapshot_to_argb(&snapshot);
-            window.set_title(&view.title);
-            window
-                .update_with_buffer(&buffer, snapshot.width, snapshot.height)
-                .map_err(|err| format!("failed to present browser window: {err}"))?;
-            dirty = false;
-        } else {
-            window.update();
+            let frame = render_browser_frame(
+                &mut vm,
+                world,
+                browser_window,
+                handle,
+                &browser,
+                &layout,
+                render_selector,
+            )?;
+            buffer = frame.0;
+            title = frame.3;
         }
+
+        window.set_title(&title);
+        window
+            .update_with_buffer(&buffer, width, height)
+            .map_err(|err| format!("failed to present browser window: {err}"))?;
+        std::thread::sleep(Duration::from_millis(16));
     }
     Ok(())
 }

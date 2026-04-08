@@ -209,7 +209,7 @@ pub struct Vm {
     pub symbols: HashMap<String, Oop>,
     pub globals: HashMap<String, Oop>,
     method_owners: HashMap<Oop, u32>,
-    method_sources: HashMap<Oop, String>,
+    pub(crate) method_sources: HashMap<Oop, String>,
     closure_homes: HashMap<Oop, ClosureHome>,
     active_frame_ids: Vec<usize>,
     next_frame_id: usize,
@@ -233,6 +233,7 @@ impl Vm {
         special_selectors: Vec<Oop>,
         mut symbols: HashMap<String, Oop>,
         globals: HashMap<String, Oop>,
+        method_sources: HashMap<Oop, String>,
     ) -> Self {
         bootstrap::install_bootstrap_methods(&mut heap, &mut class_table, &mut symbols);
         let mut vm = Self {
@@ -245,7 +246,7 @@ impl Vm {
             symbols,
             globals,
             method_owners: HashMap::new(),
-            method_sources: HashMap::new(),
+            method_sources,
             closure_homes: HashMap::new(),
             active_frame_ids: Vec::new(),
             next_frame_id: 1,
@@ -273,6 +274,7 @@ impl Vm {
             state.special_selectors,
             state.symbols,
             state.globals,
+            HashMap::new(),
         )
     }
 
